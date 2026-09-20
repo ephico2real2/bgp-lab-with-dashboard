@@ -1,0 +1,186 @@
+# The four-router lab (two companies multi-homed to two ISPs) plus the dashboard,
+# without containerlab. Exists so the lab runs in CI and on any host with Docker.
+# containerlab remains the documented path (`simple.clab.yml`); the two must stay
+# in step — they share `configs/`, which is what makes that possible.
+#
+# Container names are `clab-simple-lab-<node>` because dashboard/app/poller.py
+# resolves f"{LAB_PREFIX}-{node}" with LAB_PREFIX=clab-simple-lab. The poller is
+# used unmodified.
+#
+# Interface names cannot be guaranteed by Compose: it attaches networks in
+# name-sort order, not file order (measured: companya's eth0 was 10.0.10.1,
+# then FRR put 10.0.10.1/30 on eth1 — the wrong L2). Compose `priority` is
+# rendered (v5.5.1) but does not assign ethN (measured: aaa-low at priority
+# 100 became eth0; zzz-high at 1000 became eth1). ipv4_address on each
+# attachment is the address the config already uses; ci/rename-ifaces.sh
+# renames that iface to eth1/eth2/eth3 before FRR starts. We never renumber.
+#
+# Docker IPAM is /29 with gateway .5: a /30 has only two host addresses, both
+# claimed by the routers, and a bridge needs a gateway that is neither.
+name: simple-lab
+
+x-router: &router
+  image: ${FRR_IMAGE:-quay.io/frrouting/frr:10.5.3}
+  command: ["/ci/rename-ifaces.sh"]
+  cap_add:
+    - NET_ADMIN
+    - NET_RAW
+    - SYS_ADMIN
+  sysctls:
+    net.ipv4.ip_forward: "1"
+  healthcheck:
+    test: ["CMD-SHELL", "vtysh -c 'show daemons' | grep -q bgpd"]
+    interval: 2s
+    timeout: 3s
+    retries: 20
+    start_period: 8s
+
+services:
+  companya:
+    <<: *router
+    container_name: clab-simple-lab-companya
+    hostname: companya
+    volumes:
+      - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
+      - ../configs/companya/frr.conf:/etc/frr/frr.conf:ro
+      - ../configs/companya/daemons:/etc/frr/daemons:ro
+      - ../configs/vtysh.conf:/etc/frr/vtysh.conf:ro
+    networks:
+      mgmt:
+        ipv4_address: 172.22.20.11
+      companya-isp1:
+        ipv4_address: 10.0.10.1
+      companya-isp2:
+        ipv4_address: 10.0.11.1
+
+  companyb:
+    <<: *router
+    container_name: clab-simple-lab-companyb
+    hostname: companyb
+    volumes:
+      - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
+      - ../configs/companyb/frr.conf:/etc/frr/frr.conf:ro
+      - ../configs/companyb/daemons:/etc/frr/daemons:ro
+      - ../configs/vtysh.conf:/etc/frr/vtysh.conf:ro
+    networks:
+      mgmt:
+        ipv4_address: 172.22.20.12
+      companyb-isp1:
+        ipv4_address: 10.0.30.1
+      companyb-isp2:
+        ipv4_address: 10.0.31.1
+
+  isp1:
+    <<: *router
+    container_name: clab-simple-lab-isp1
+    hostname: isp1
+    volumes:
+      - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
+      - ../configs/isp1/frr.conf:/etc/frr/frr.conf:ro
+      - ../configs/isp1/daemons:/etc/frr/daemons:ro
+      - ../configs/vtysh.conf:/etc/frr/vtysh.conf:ro
+    networks:
+      mgmt:
+        ipv4_address: 172.22.20.13
+      companya-isp1:
+        ipv4_address: 10.0.10.2
+      isp1-isp2:
+        ipv4_address: 10.0.20.1
+      companyb-isp1:
+        ipv4_address: 10.0.30.2
+
+  isp2:
+    <<: *router
+    container_name: clab-simple-lab-isp2
+    hostname: isp2
+    volumes:
+      - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
+      - ../configs/isp2/frr.conf:/etc/frr/frr.conf:ro
+      - ../configs/isp2/daemons:/etc/frr/daemons:ro
+      - ../configs/vtysh.conf:/etc/frr/vtysh.conf:ro
+    networks:
+      mgmt:
+        ipv4_address: 172.22.20.14
+      companya-isp2:
+        ipv4_address: 10.0.11.2
+      isp1-isp2:
+        ipv4_address: 10.0.20.2
+      companyb-isp2:
+        ipv4_address: 10.0.31.2
+
+  dashboard:
+    image: ${DASHBOARD_IMAGE:-bgp-lab-dashboard:local}
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+    container_name: clab-simple-lab-dashboard
+    hostname: dashboard
+    environment:
+      LAB_TOPOLOGY: /lab/topology.yml
+      LAB_PREFIX: clab-simple-lab
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../simple.clab.yml:/lab/topology.yml:ro
+      - ../configs:/lab/configs:ro
+    ports:
+      # DASHBOARD_PORT, and 8089 by default: containerlab's own topology publishes
+      # 8088 (simple.clab.yml), and a second lab on the same Docker host that wants
+      # the same port takes the first one down. Set DASHBOARD_PORT=8088 to match the
+      # containerlab path when nothing else is running.
+      - "127.0.0.1:${DASHBOARD_PORT:-8089}:8080"
+    networks:
+      mgmt:
+        ipv4_address: 172.22.20.100
+    depends_on:
+      companya:
+        condition: service_healthy
+      companyb:
+        condition: service_healthy
+      isp1:
+        condition: service_healthy
+      isp2:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/state')",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+networks:
+  mgmt:
+    ipam:
+      config:
+        - subnet: 172.22.20.0/24
+          gateway: 172.22.20.254
+  companya-isp1:
+    ipam:
+      config:
+        - subnet: 10.0.10.0/29
+          gateway: 10.0.10.5
+  companya-isp2:
+    ipam:
+      config:
+        - subnet: 10.0.11.0/29
+          gateway: 10.0.11.5
+  isp1-isp2:
+    ipam:
+      config:
+        - subnet: 10.0.20.0/29
+          gateway: 10.0.20.5
+  companyb-isp1:
+    ipam:
+      config:
+        - subnet: 10.0.30.0/29
+          gateway: 10.0.30.5
+  companyb-isp2:
+    ipam:
+      config:
+        - subnet: 10.0.31.0/29
+          gateway: 10.0.31.5
