@@ -75,7 +75,7 @@ docker compose -f compose/docker-compose.yml up -d --wait
 # or: ci/up.sh
 \`\`\`
 
-Dashboard: http://127.0.0.1:8088
+Dashboard: http://127.0.0.1:${DASHBOARD_PORT:-8089}
 
 ## Screenshots
 

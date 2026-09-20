@@ -5,7 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/compose/docker-compose.yml}"
 BGP_PY="$ROOT/ci/bgp.py"
 LAB_PREFIX="${LAB_PREFIX:-clab-simple-lab}"
-DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:8088}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-8089}"
+export DASHBOARD_PORT   # compose reads it for the published port
+DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:${DASHBOARD_PORT}}"
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"

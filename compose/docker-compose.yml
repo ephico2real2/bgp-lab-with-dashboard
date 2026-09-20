@@ -121,7 +121,11 @@ services:
       - ../simple.clab.yml:/lab/topology.yml:ro
       - ../configs:/lab/configs:ro
     ports:
-      - "127.0.0.1:8088:8080"
+      # DASHBOARD_PORT, and 8089 by default: containerlab's own topology publishes
+      # 8088 (simple.clab.yml), and a second lab on the same Docker host that wants
+      # the same port takes the first one down. Set DASHBOARD_PORT=8088 to match the
+      # containerlab path when nothing else is running.
+      - "127.0.0.1:${DASHBOARD_PORT:-8089}:8080"
     networks:
       mgmt:
         ipv4_address: 172.22.20.100

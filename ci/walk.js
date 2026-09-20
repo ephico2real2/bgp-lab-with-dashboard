@@ -1,5 +1,6 @@
 // ci/walk.js — Playwright walk of the dashboard for CI (the runner has no Chrome app).
-// Opens http://127.0.0.1:8088/, waits for four graph nodes, screenshots, runs
+// Opens the dashboard (DASHBOARD_URL, or 127.0.0.1:$DASHBOARD_PORT, default 8089),
+// waits for four graph nodes, screenshots, runs
 // `clear bgp *` on isp1, waits for a non-Established session, screenshots, waits
 // for recovery, screenshots. Timings go to ci/out/walk.log.
 //
@@ -13,7 +14,7 @@ const http = require("http");
 
 const OUT = process.env.SHOTS_DIR || "ci/out/screenshots";
 const LOG = process.env.WALK_LOG || "ci/out/walk.log";
-const URL = process.env.DASHBOARD_URL || "http://127.0.0.1:8088";
+const URL = process.env.DASHBOARD_URL || `http://127.0.0.1:${process.env.DASHBOARD_PORT || 8089}`;
 const ISP1 = process.env.ISP1_CONTAINER || "clab-simple-lab-isp1";
 
 fs.mkdirSync(OUT, { recursive: true });

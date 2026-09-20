@@ -12,7 +12,7 @@ docker compose -f compose/docker-compose.yml up -d --wait
 # or: ci/up.sh   # waits until every eBGP session is Established
 ```
 
-Dashboard: [http://127.0.0.1:8088](http://127.0.0.1:8088). Evidence from a green run: [`docs/CI-EVIDENCE.md`](docs/CI-EVIDENCE.md). The workflow that produces it is on the [Actions](../../actions) tab.
+Dashboard: [http://127.0.0.1:8089](http://127.0.0.1:8089) (`DASHBOARD_PORT` overrides it; the containerlab path still publishes 8088). Evidence from a green run: [`docs/CI-EVIDENCE.md`](docs/CI-EVIDENCE.md). The workflow that produces it is on the [Actions](../../actions) tab.
 
 `simple.clab.yml` remains the documented containerlab path. The two share `configs/` and must stay in step.
 
@@ -107,7 +107,7 @@ sudo clab inspect -t simple.clab.yml
 sudo clab destroy -t simple.clab.yml
 ```
 
-After deploy, open `http://<host>:8088` for the live dashboard.
+After deploy, open `http://<host>:8088` for the live dashboard (the compose path defaults to `8089` — see `DASHBOARD_PORT`).
 
 Container names: `clab-simple-lab-companya`, `clab-simple-lab-isp1`, `clab-simple-lab-isp2`, `clab-simple-lab-companyb`, `clab-simple-lab-dashboard`.
 
