@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Headless Chrome screenshots of the dashboard: steady, after `clear bgp *`
-# on isp1, then recovered. Waits for /api/state (not a fixed sleep). If
+# Headless Chrome screenshots of the dashboard: steady, isp1's sessions
+# administratively down, then recovered. Waits for /api/state (not a fixed sleep). If
 # Chrome is absent, says so and exits 0 — CI uses Playwright (ci/walk.js).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -113,12 +113,36 @@ sleep 2
 shot "$OUT/01-steady.png"
 
 isp1=$(container_name isp1)
-echo "clear bgp * on ${isp1}" | tee -a "$LOG"
-docker exec "$isp1" vtysh -c "clear bgp *"
+# The photographed outage is an ADMINISTRATIVE SHUTDOWN, not `clear bgp *`: a
+# clear drops and re-establishes inside ~2 s, and a 2 s poller cannot be relied
+# on to catch a 2 s transient (measured in CI — run 35533915645 caught it, run
+# 35533917595 polled past it and timed out after 60 s). A shutdown holds the
+# sessions down until they are released, so the picture is of a known state.
+isp1_asn=$(docker exec "$isp1" vtysh -c 'show running-config' \
+  | awk '/^router bgp /{print $3; exit}')
+isp1_peers=$(docker exec "$isp1" vtysh -c 'show running-config' \
+  | awk '/^ *neighbor .* remote-as /{print $2}' | sort -u)
+[ -n "$isp1_asn" ] && [ -n "$isp1_peers" ] || { echo "no BGP config read from ${isp1}" >&2; exit 1; }
+shut() { # "" to shut, "no " to release
+  local verb=$1 args="-c 'conf t' -c 'router bgp ${isp1_asn}'" p
+  for p in $isp1_peers; do args="$args -c '${verb}neighbor ${p} shutdown'"; done
+  eval "docker exec ${isp1} vtysh $args"
+}
+echo "administrative shutdown of ${isp1}'s sessions ($(echo "$isp1_peers" | tr '\n' ' '))" | tee -a "$LOG"
+shut ""
+trap 'shut "no " >/dev/null 2>&1 || true' EXIT
 
 deadline_wait 60 "$down_py" "dashboard shows a non-Established session"
-shot "$OUT/02-clear-bgp.png"
+shot "$OUT/02-sessions-down.png"
+
+echo "releasing ${isp1}'s sessions" | tee -a "$LOG"
+shut "no "
+trap - EXIT
 
 deadline_wait 90 "$up_py" "dashboard sessions recovered"
 sleep 2
 shot "$OUT/03-recovered.png"
+
+# the blog's own demo, for the events pane; the outage above is what was photographed
+echo "clear bgp * on ${isp1} (the blog's demo; events only)" | tee -a "$LOG"
+docker exec "$isp1" vtysh -c "clear bgp *"

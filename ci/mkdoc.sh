@@ -55,7 +55,7 @@ read_or_missing() {
 check_body=$(read_or_missing "$check_file")
 timings_body=$(read_or_missing "$timings_file")
 shot1="${shot_base:+$shot_base/01-steady.png}"
-shot2="${shot_base:+$shot_base/02-clear-bgp.png}"
+shot2="${shot_base:+$shot_base/02-sessions-down.png}"
 shot3="${shot_base:+$shot_base/03-recovered.png}"
 digest_line=${digest:-"(not pushed)"}
 
@@ -85,12 +85,12 @@ The dashboard at rest: four routers, eBGP sessions Established.
 
 $(if [ -n "$shot1" ]; then echo "![01-steady](${shot1})"; else echo "(no screenshot URL)"; fi)
 
-### 02-clear-bgp
+### 02-sessions-down
 
 After \`clear bgp *\` on isp1 — the blog's own demo. Sessions toward isp1 are
 not Established; the graph shows the drop.
 
-$(if [ -n "$shot2" ]; then echo "![02-clear-bgp](${shot2})"; else echo "(no screenshot URL)"; fi)
+$(if [ -n "$shot2" ]; then echo "![02-sessions-down](${shot2})"; else echo "(no screenshot URL)"; fi)
 
 ### 03-recovered
 

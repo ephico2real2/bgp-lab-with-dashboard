@@ -1,8 +1,15 @@
 // ci/walk.js — Playwright walk of the dashboard for CI (the runner has no Chrome app).
 // Opens the dashboard (DASHBOARD_URL, or 127.0.0.1:$DASHBOARD_PORT, default 8089),
 // waits for four graph nodes, screenshots, runs
-// `clear bgp *` on isp1, waits for a non-Established session, screenshots, waits
-// for recovery, screenshots. Timings go to ci/out/walk.log.
+// an administrative shutdown of isp1's sessions, screenshots the outage, brings
+// them back, screenshots the recovery, then runs the blog's own `clear bgp *`
+// for the events pane. Timings go to ci/out/walk.log.
+//
+// Why shutdown and not `clear bgp *` for the photographed outage: a clear drops
+// and re-establishes inside ~2 s (measured: run 35533915645 caught it, run
+// 35533917595 polled past it and timed out after 60 s). A 2 s poller cannot be
+// relied on to photograph a 2 s transient. `neighbor … shutdown` holds the
+// sessions down until they are released, so the picture is of a known state.
 //
 // The graph is a Cytoscape canvas (no per-node DOM). Four nodes are confirmed
 // from /api/state (what dashboard.js builds the graph from) plus #graph canvas
@@ -109,20 +116,52 @@ async function waitFor(label, limitSec, pred) {
   await page.screenshot({ path: `${OUT}/01-steady.png`, fullPage: true });
   log(`wrote ${OUT}/01-steady.png`);
 
-  log(`clear bgp * on ${ISP1}`);
-  execSync(`docker exec ${ISP1} vtysh -c 'clear bgp *'`, { stdio: "inherit" });
+  const ISP1_ASN = process.env.ISP1_ASN || "65100";
+  const vtysh = (args) =>
+    execSync(`docker exec ${ISP1} vtysh ${args}`, { stdio: "inherit" });
+  // the peers isp1 actually has, read from its running config — not a list
+  // written here that would drift the moment configs/ changes
+  const neighbors = (
+    process.env.ISP1_NEIGHBORS ||
+    execSync(`docker exec ${ISP1} vtysh -c 'show running-config'`, { encoding: "utf8" })
+      .split("\n")
+      .map((l) => (l.match(/^\s*neighbor (\S+) remote-as /) || [])[1])
+      .filter(Boolean)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .join(",")
+  )
+    .split(",")
+    .map((n) => n.trim())
+    .filter(Boolean);
+  if (neighbors.length === 0) {
+    throw new Error(`no neighbors found in ${ISP1}'s running config`);
+  }
+  const shut = (verb) =>
+    vtysh(
+      ["-c 'conf t'", `-c 'router bgp ${ISP1_ASN}'`]
+        .concat(neighbors.map((n) => `-c '${verb}neighbor ${n} shutdown'`))
+        .join(" ")
+    );
+  log(`administrative shutdown of ${ISP1}'s ${neighbors.length} sessions`);
+  shut("");
 
   await waitFor("dashboard shows a non-Established session", 60, (s) => {
     return peersOf(s).some((p) => p.state && p.state !== "Established");
   });
   await page.waitForTimeout(500);
-  await page.screenshot({ path: `${OUT}/02-clear-bgp.png`, fullPage: true });
-  log(`wrote ${OUT}/02-clear-bgp.png`);
+  await page.screenshot({ path: `${OUT}/02-sessions-down.png`, fullPage: true });
+  log(`wrote ${OUT}/02-sessions-down.png`);
 
+  log(`releasing ${ISP1}'s sessions`);
+  shut("no ");
   await waitFor("dashboard sessions recovered", 90, (s) => {
     const peers = peersOf(s);
     return peers.length > 0 && peers.every((p) => p.state === "Established");
   });
+  // the blog's own demo, for the events pane: the clear is recorded even though
+  // the outage above is what gets photographed
+  log(`clear bgp * on ${ISP1} (the blog's demo; events only)`);
+  vtysh("-c 'clear bgp *'");
   await page.waitForTimeout(1000);
   await page.screenshot({ path: `${OUT}/03-recovered.png`, fullPage: true });
   log(`wrote ${OUT}/03-recovered.png`);
