@@ -1,0 +1,5 @@
+DOM connected+#graph canvas: 0.1 s
+graph four nodes (/api/state): 0.0 s
+wrote ci/out/screenshots/01-steady.png
+clear bgp * on clab-simple-lab-isp1
+FAILED dashboard shows a non-Established session: timed out after 60 s last={"ready":true,"nodes":["companya","isp1","isp2","companyb"],"peers":["companya:10.0.10.2=Established","companya:10.0.11.2=Established","isp1:10.0.10.1=Established","isp1:10.0.20.2=Established","isp1:10.0.30.1=Established","isp2:10.0.11.1=Established","isp2:10.0.20.1=Established","isp2:10.0.31.1=Established","companyb:10.0.30.2=Established","companyb:10.0.31.2=Established"]}
