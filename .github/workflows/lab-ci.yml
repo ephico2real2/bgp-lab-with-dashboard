@@ -96,6 +96,7 @@ jobs:
         run: echo "digest=" >> "$GITHUB_OUTPUT"
 
       - name: Bring the lab up
+        id: up
         run: ci/up.sh
 
       - name: compose ps and every router's show bgp summary
@@ -142,7 +143,9 @@ jobs:
         run: cd .tmp/pw && npx playwright install-deps chromium >/dev/null 2>&1 || true
 
       - name: Screenshots through Playwright
-        if: always() && !cancelled()
+        # only when the lab is actually up: a failed bring-up otherwise reports
+        # itself twice, the second time as ERR_CONNECTION_REFUSED (run 35533725780)
+        if: steps.up.outcome == 'success' && !cancelled()
         run: |
           set -euo pipefail
           mkdir -p ci/out/screenshots

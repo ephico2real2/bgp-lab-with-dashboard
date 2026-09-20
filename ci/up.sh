@@ -11,7 +11,25 @@ cd "$ROOT"
 DEADLINE="${DEADLINE:-90}"
 POLL="${POLL:-2}"
 
-compose up -d --wait --wait-timeout 120
+# A router can lose its start-up race: run 35533725780 (PR #19) had
+# clab-simple-lab-isp1 exit 141 (SIGPIPE) while the other three came up
+# healthy, and compose then refused the dashboard's dependency. One retry,
+# with the evidence printed first, so a repeat is diagnosable instead of a
+# bare "dependency failed to start".
+up_once() { compose up -d --wait --wait-timeout 120; }
+if ! up_once; then
+  echo "--- the lab did not come up; state and logs of what failed ---" >&2
+  compose ps -a >&2 || true
+  for c in $(compose ps -a --format '{{.Name}} {{.State}}' 2>/dev/null | awk '$2 != "running" {print $1}'); do
+    echo "--- $c ---" >&2
+    docker inspect "$c" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} err={{.State.Error}}' >&2 || true
+    docker logs --tail 40 "$c" >&2 || true
+  done
+  echo "--- retrying once (recreate) ---" >&2
+  compose up -d --force-recreate --wait --wait-timeout 120
+  echo "the lab needed a retry: one or more containers failed their first start" >&2
+fi
+
 
 expect_n=$(python3 "$BGP_PY" expected-peers --root "$ROOT" | wc -l | tr -d ' ')
 if [ "${expect_n:-0}" -eq 0 ]; then
