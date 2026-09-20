@@ -3,6 +3,19 @@
 A 4-node FRR lab — two companies multi-homed to two ISPs — focused on the bread-and-butter BGP knobs: **AS-path prepend, LOCAL_PREF, MED, and failover**.
 Feel free to modify, add more routers, more connections.
 
+## Running the lab without containerlab (CI and any Docker host)
+
+This is a fork adding CI and fixes on top of [the original](https://github.com/vadaszgergo/bgp-lab-with-dashboard) and its [blog post](https://gergovadasz.hu/make-bgp-visible-a-live-topology-dashboard-with-containerlab/). The upstream repository has no licence, so this fork exists for contributing back, not for redistribution.
+
+```bash
+docker compose -f compose/docker-compose.yml up -d --wait
+# or: ci/up.sh   # waits until every eBGP session is Established
+```
+
+Dashboard: [http://127.0.0.1:8088](http://127.0.0.1:8088). Evidence from a green run: [`docs/CI-EVIDENCE.md`](docs/CI-EVIDENCE.md). The workflow that produces it is on the [Actions](../../actions) tab.
+
+`simple.clab.yml` remains the documented containerlab path. The two share `configs/` and must stay in step.
+
 ## Topology
 
 ![alt text](bgp-lap-topology.png)

@@ -1,0 +1,241 @@
+# The four-router lab under docker compose, the dashboard built from source,
+# a check, screenshots, and a generated evidence page — one Actions run whose
+# number, image and pictures a later PR can cite. contents: write is only for
+# the ci-captures branch (a job summary strips data: URIs and cannot read
+# artifacts). A fork PR without registry credentials must still go green.
+name: lab-ci
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REGISTRY: ${{ vars.REGISTRY || 'quay.io' }}
+      REGISTRY_NAMESPACE: ${{ vars.REGISTRY_NAMESPACE || 'ephico2real' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the dashboard image (linux/amd64,linux/arm64)
+        id: image
+        run: |
+          set -euo pipefail
+          SHORT=$(printf '%s' "${{ github.sha }}" | cut -c1-7)
+          IMAGE="${REGISTRY}/${REGISTRY_NAMESPACE}/bgp-dashboard"
+          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${SHORT}" >> "$GITHUB_OUTPUT"
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -t "${IMAGE}:sha-${SHORT}" \
+            -t "${IMAGE}:develop" \
+            --output type=cacheonly \
+            dashboard/
+          docker buildx build --load \
+            -t "${IMAGE}:sha-${SHORT}" \
+            -t "${IMAGE}:develop" \
+            -t bgp-lab-dashboard:local \
+            dashboard/
+          echo "DASHBOARD_IMAGE=${IMAGE}:sha-${SHORT}" >> "$GITHUB_ENV"
+
+      - name: Check the publish credentials are configured
+        id: creds
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          # Presence only — never echo the values. Unset and empty both mean
+          # "cannot publish"; a fork PR without credentials must still go green.
+          if [ -z "${REGISTRY_USERNAME}" ] || [ -z "${REGISTRY_PASSWORD}" ]; then
+            echo "::warning::REGISTRY_USERNAME / REGISTRY_PASSWORD are not set; skipping publish."
+            echo "  Set them under Settings > Secrets and variables > Actions > Secrets."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push the dashboard image
+        id: push
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          SHORT: ${{ steps.image.outputs.short }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${REGISTRY_PASSWORD}" \
+            | docker login "${REGISTRY}" --username "${REGISTRY_USERNAME}" --password-stdin
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -t "${IMAGE}:sha-${SHORT}" \
+            -t "${IMAGE}:develop" \
+            --push \
+            --metadata-file /tmp/dash-meta.json \
+            dashboard/
+          python3 -m json.tool /tmp/dash-meta.json >/dev/null
+          digest=$(python3 -c 'import json; print(json.load(open("/tmp/dash-meta.json")).get("containerimage.digest",""))')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "pushed ${IMAGE}:sha-${SHORT} digest=${digest}"
+
+      - name: Record that nothing was pushed
+        if: steps.creds.outputs.configured != 'true'
+        id: nopush
+        run: echo "digest=" >> "$GITHUB_OUTPUT"
+
+      - name: Bring the lab up
+        run: ci/up.sh
+
+      - name: compose ps and every router's show bgp summary
+        run: |
+          set -euo pipefail
+          docker compose -f compose/docker-compose.yml ps
+          for n in companya companyb isp1 isp2; do
+            echo "======== clab-simple-lab-${n} show bgp summary ========"
+            docker exec "clab-simple-lab-${n}" vtysh -c 'show bgp summary'
+          done
+
+      - name: Check
+        id: check
+        run: |
+          set -o pipefail
+          mkdir -p ci/out
+          ci/check.sh | tee ci/out/check.txt
+          {
+            echo "## check"
+            echo
+            echo '```'
+            cat ci/out/check.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Playwright 1.63.0 and Chromium (cached by version)
+        if: always() && !cancelled()
+        id: pwcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .tmp/pw/node_modules
+            ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0-yaml4.1.0
+
+      - name: Install Playwright when not cached
+        if: always() && !cancelled() && steps.pwcache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tmp/pw && cd .tmp/pw && npm init -y >/dev/null && npm i --no-audit --no-fund "playwright@1.63.0" "js-yaml@4.1.0" >/dev/null
+          npx playwright install --with-deps chromium >/dev/null 2>&1
+
+      - name: The OS libraries Chromium needs (present on a cache hit too)
+        if: always() && !cancelled()
+        run: cd .tmp/pw && npx playwright install-deps chromium >/dev/null 2>&1 || true
+
+      - name: Screenshots through Playwright
+        if: always() && !cancelled()
+        run: |
+          set -euo pipefail
+          mkdir -p ci/out/screenshots
+          NODE_PATH="$PWD/.tmp/pw/node_modules" node ci/walk.js
+          ls -la ci/out/screenshots/*.png | awk '{print "  " $5, $9}'
+
+      - name: Publish the pictures to ci-captures
+        if: always() && !cancelled()
+        id: captures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          OUT=ci/out/screenshots
+          ls "$OUT"/*.png >/dev/null 2>&1 || { echo "no captures to publish" | tee -a "$GITHUB_STEP_SUMMARY"; echo "dir=" >> "$GITHUB_OUTPUT"; exit 0; }
+          REF="${{ github.workflow_ref }}"
+          REF="${REF%%@*}"
+          WF=$(basename "$REF" | sed -E 's/\.ya?ml$//')
+          DIR="$(date -u +%Y-%m-%dT%H%MZ)_${WF}_run${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git remote set-url origin "https://github.com/${REPO}.git"
+          extra=(-c "http.extraheader=AUTHORIZATION: basic ${AUTH}")
+          rm -rf .tmp/cap
+          git worktree prune
+          if git "${extra[@]}" ls-remote --exit-code --heads origin ci-captures >/dev/null 2>&1; then
+            git "${extra[@]}" fetch -q origin ci-captures
+            git worktree add -q .tmp/cap origin/ci-captures
+          else
+            git worktree add -q --detach .tmp/cap
+            (cd .tmp/cap && git checkout -q --orphan ci-captures && git rm -rfq . >/dev/null 2>&1 || true)
+          fi
+          mkdir -p ".tmp/cap/${DIR}"
+          cp "$OUT"/*.png ci/out/walk.log ".tmp/cap/${DIR}/" 2>/dev/null || cp "$OUT"/*.png ".tmp/cap/${DIR}/"
+          (cd .tmp/cap && git add -A && git commit -qm "captures: ${DIR}" && git "${extra[@]}" push -q origin "HEAD:ci-captures")
+          {
+            echo "## Captures — [\`${DIR}\`](https://github.com/${REPO}/tree/ci-captures/${DIR})"
+            echo
+            echo "The dashboard as the runner saw it. The same files are in the run's artifact."
+            echo
+            if [ -f ci/out/walk.log ]; then
+              while IFS= read -r line; do echo "- \`${line}\`"; done < ci/out/walk.log
+            fi
+            for f in "$OUT"/*.png; do
+              n=$(basename "$f" .png)
+              echo
+              echo "### ${n}"
+              echo
+              echo "![${n}](https://raw.githubusercontent.com/${REPO}/ci-captures/${DIR}/${n}.png)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "captures published: https://github.com/${REPO}/tree/ci-captures/${DIR}"
+
+      - name: Compose logs
+        if: always()
+        run: |
+          mkdir -p ci/out
+          docker compose -f compose/docker-compose.yml logs --no-color > ci/out/compose.log || true
+
+      - name: Upload ci/out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-ci
+          path: ci/out/
+          if-no-files-found: ignore
+
+      - name: Down
+        if: always()
+        run: ci/down.sh
+
+      - name: How to fill docs/CI-EVIDENCE.md
+        if: always()
+        env:
+          DIGEST: ${{ steps.push.outputs.digest || steps.nopush.outputs.digest }}
+          DIR: ${{ steps.captures.outputs.dir }}
+        run: |
+          REPO="${{ github.repository }}"
+          RUN="${{ github.server_url }}/${REPO}/actions/runs/${{ github.run_id }}"
+          SHA="${{ github.sha }}"
+          BASE=""
+          if [ -n "${DIR}" ]; then
+            BASE="https://raw.githubusercontent.com/${REPO}/ci-captures/${DIR}"
+          fi
+          echo "After a green run, fill docs/CI-EVIDENCE.md from this run's output (CI does not commit it):" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "ci/mkdoc.sh --run-url ${RUN} --commit ${SHA} --digest ${DIGEST:-not-pushed} --check-file ci/out/check.txt --timings-file ci/out/walk.log --shot-base ${BASE} --out docs/CI-EVIDENCE.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "${DIGEST}" ]; then
+            echo | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "pushed digest: \`${DIGEST}\`" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
