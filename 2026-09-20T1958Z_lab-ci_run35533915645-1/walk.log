@@ -1,0 +1,8 @@
+DOM connected+#graph canvas: 0.1 s
+graph four nodes (/api/state): 0.0 s
+wrote ci/out/screenshots/01-steady.png
+clear bgp * on clab-simple-lab-isp1
+dashboard shows a non-Established session: 2.0 s
+wrote ci/out/screenshots/02-clear-bgp.png
+dashboard sessions recovered: 2.0 s
+wrote ci/out/screenshots/03-recovered.png
