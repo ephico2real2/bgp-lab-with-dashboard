@@ -9,7 +9,9 @@
 #
 # Interface names cannot be guaranteed by Compose: it attaches networks in
 # name-sort order, not file order (measured: companya's eth0 was 10.0.10.1,
-# then FRR put 10.0.10.1/30 on eth1 — the wrong L2). ipv4_address on each
+# then FRR put 10.0.10.1/30 on eth1 — the wrong L2). Compose `priority` is
+# rendered (v5.5.1) but does not assign ethN (measured: aaa-low at priority
+# 100 became eth0; zzz-high at 1000 became eth1). ipv4_address on each
 # attachment is the address the config already uses; ci/rename-ifaces.sh
 # renames that iface to eth1/eth2/eth3 before FRR starts. We never renumber.
 #
