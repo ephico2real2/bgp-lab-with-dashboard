@@ -8,6 +8,11 @@ cd "$(dirname "$0")"
 . ./lib.sh
 cd "$ROOT"
 
+# The FRR pin is read from the compose file rather than written here, so the
+# page cannot claim a version the lab does not actually run.
+frr_image=$(sed -n 's|.*\(quay\.io/frrouting/frr:[0-9][0-9.]*\).*|\1|p' \
+  "$(dirname "$0")/../compose/docker-compose.yml" | head -1)
+
 run_url=""
 commit=""
 digest=""
@@ -77,6 +82,9 @@ docker compose -f compose/docker-compose.yml up -d --wait
 
 Dashboard: http://127.0.0.1:${DASHBOARD_PORT:-8089}
 
+Routers: \`${frr_image:-quay.io/frrouting/frr (pin not found)}\` — the pin in
+\`compose/docker-compose.yml\`, which is what this run brought up.
+
 ## Screenshots
 
 ### 01-steady
@@ -87,8 +95,15 @@ $(if [ -n "$shot1" ]; then echo "![01-steady](${shot1})"; else echo "(no screens
 
 ### 02-sessions-down
 
-After \`clear bgp *\` on isp1 — the blog's own demo. Sessions toward isp1 are
-not Established; the graph shows the drop.
+After an administrative shutdown of isp1's sessions. The graph shows the drop
+and the events pane reads \`Idle (Admin)\`.
+
+This picture is deliberately NOT \`clear bgp *\`: a clear drops and
+re-establishes inside about 2 s, and a 2 s poller cannot be relied on to
+photograph a 2 s transient — one run caught it and the next polled straight
+past it. A shutdown holds the sessions down until they are released, so the
+picture is of a known state. The blog's own \`clear bgp *\` still runs, after
+the recovery, for the events pane.
 
 $(if [ -n "$shot2" ]; then echo "![02-sessions-down](${shot2})"; else echo "(no screenshot URL)"; fi)
 
