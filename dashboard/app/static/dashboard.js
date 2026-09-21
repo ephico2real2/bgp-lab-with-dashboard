@@ -22,6 +22,21 @@ const STATE_COLORS = {
   unknown: "#8b8b8b",
 };
 
+// stateColor matches on a PREFIX, not the whole string.
+//
+// FRR qualifies a state with a reason: an administrative shutdown reads
+// "Idle (Admin)", which is not a key in the table above, so an exact lookup
+// dropped it into the grey "unknown" colour — the one session a human had just
+// taken down was the one the graph refused to draw as down.
+function stateColor(state) {
+  const s = String(state || "").trim();
+  if (!s) return STATE_COLORS.unknown;
+  for (const key of Object.keys(STATE_COLORS)) {
+    if (key !== "unknown" && s.startsWith(key)) return STATE_COLORS[key];
+  }
+  return STATE_COLORS.unknown;
+}
+
 const ROLE_COLORS = {
   edge: { bg: "#d6f0d3", border: "#2c9d3c" },   // companies (heuristic)
   isp:  { bg: "#cfe6fd", border: "#2c79d9" },
@@ -53,6 +68,11 @@ function connect() {
       lastState = data.data || {};
       updateGraph();
       if (selectedNode) renderDetail(selectedNode);
+    } else if (data.type === "signal") {
+      // Every tick, whether or not the topology changed. A heartbeat that only
+      // beats when the graph changes is not a heartbeat.
+      lastSignal = data.data || {};
+      if (!document.getElementById("traffic").hidden) renderTraffic();
     } else if (data.type === "event") {
       addEvent(data.data);
     }
@@ -171,7 +191,7 @@ function buildGraph() {
         selector: "edge",
         style: {
           "width": 3,
-          "line-color": (e) => STATE_COLORS[e.data("state")] || STATE_COLORS.unknown,
+          "line-color": (e) => stateColor(e.data("state")),
           "curve-style": "bezier",
           "source-label": "data(sourceLabel)",
           "target-label": "data(targetLabel)",
@@ -242,6 +262,134 @@ function esc(v) {
   return String(v).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
+}
+
+
+// ---- the signal -----------------------------------------------------------
+//
+// The poller measures what each session DID between two polls and broadcasts
+// it every tick as a "signal" frame. The page ignored those frames entirely,
+// so an Established line was all it could ever say: a session carrying updates
+// and one that has been silent for a minute looked identical.
+//
+// Everything below is driven by a number the poller measured. `hasDelta` and
+// `hasTimers` say when it did NOT measure one, and those cases render as
+// "unmeasured" rather than as a zero that reads like silence.
+
+let lastSignal = {};
+
+// sessionHealth reads FRR's own clock, not our sampling.
+//
+// quietMsec is bgpTimerLastRead: how long since this peer last sent an UPDATE
+// or a KEEPALIVE. Healthy, it sawtooths between 0 and the keepalive interval;
+// past that a keepalive was missed, and at holdMsec FRR tears the session
+// down. The thresholds are fractions of the NEGOTIATED timers, because this
+// lab runs FRR's defaults (keepalive 60s, hold 180s) while other fabrics run
+// 3 and 9 — a hard number would be wrong on one of them.
+function sessionHealth(s) {
+  if (!s || !s.hasTimers || !(s.holdMsec > 0)) return "unknown";
+  const quiet = Math.max(0, s.quietMsec || 0);
+  const keepalive = s.keepaliveMsec > 0 ? s.keepaliveMsec : s.holdMsec / 3;
+  if (quiet >= s.holdMsec * (2 / 3)) return "critical";
+  if (quiet > keepalive) return "late";
+  return "ok";
+}
+
+// A withdrawal lowers pfxRcd while msgRcvd rises, so the prefix delta is
+// SIGNED. The magnitude is what gets drawn and the sign is what it means.
+function sessionTraffic(s) {
+  if (!s || !s.hasDelta) return { known: false, messages: 0, prefixes: 0, withdrew: false };
+  const dPfx = (s.dPfxRcd || 0) + (s.dPfxSnt || 0);
+  return {
+    known: true,
+    messages: Math.max(0, s.dRcvd || 0) + Math.max(0, s.dSent || 0),
+    prefixes: Math.abs(dPfx),
+    withdrew: dPfx < 0,
+  };
+}
+
+function fmtQuiet(ms) {
+  if (ms == null) return "—";
+  return ms >= 10000 ? Math.round(ms / 1000) + "s" : (ms / 1000).toFixed(1) + "s";
+}
+
+function renderTraffic() {
+  const host = document.getElementById("traffic");
+  const note = document.getElementById("activity-note");
+  if (!host) return;
+  const nodes = Object.keys(lastSignal).sort();
+  if (!nodes.length) {
+    host.innerHTML = '<p class="hint">waiting for the first poll</p>';
+    if (note) note.textContent = "";
+    return;
+  }
+
+  const rows = [];
+  let measured = 0;
+  let moving = 0;
+  for (const node of nodes) {
+    for (const peer of Object.keys(lastSignal[node]).sort()) {
+      const s = lastSignal[node][peer];
+      const traffic = sessionTraffic(s);
+      const health = sessionHealth(s);
+      if (traffic.known) measured += 1;
+      if (traffic.known && traffic.messages > 0) moving += 1;
+      rows.push({ node, peer, s, traffic, health });
+    }
+  }
+  // Busiest first, with a stable tiebreak so equally quiet rows do not shuffle
+  // between renders.
+  rows.sort((a, b) => (b.traffic.messages - a.traffic.messages)
+    || (a.node + a.peer < b.node + b.peer ? -1 : 1));
+
+  if (note) {
+    note.textContent = measured
+      ? `${rows.length} sessions · ${moving} of ${measured} measured carried a message on the last poll`
+      : `${rows.length} sessions · nothing measured on the last poll`;
+  }
+
+  const body = rows.map((r) => {
+    const msgs = !r.traffic.known
+      ? '<span class="idle">unmeasured</span>'
+      : `<span class="${r.traffic.messages > 0 ? "moving" : "idle"}">${esc(r.traffic.messages)}</span>`;
+    const pfx = r.traffic.known && r.traffic.prefixes
+      ? `<span class="${r.traffic.withdrew ? "withdrew" : "moving"}">${r.traffic.withdrew ? "−" : "+"}${esc(r.traffic.prefixes)}</span>`
+      : '<span class="idle">0</span>';
+    const stateCls = r.s.state === "Established" ? "event-up" : "event-down";
+    return `<tr>
+      <td>${esc(r.node)}</td>
+      <td>${esc(r.peer)}</td>
+      <td class="${esc(stateCls)}">${esc(r.s.state ?? "?")}</td>
+      <td class="num">${msgs}</td>
+      <td class="num">${pfx}</td>
+      <td class="num">${esc(r.s.pfxRcd ?? "?")} / ${esc(r.s.pfxSnt ?? "?")}</td>
+      <td class="num health-${esc(r.health)}">${r.s.hasTimers ? esc(fmtQuiet(r.s.quietMsec)) : "—"}</td>
+      <td class="num">${esc(r.s.flaps ?? 0)}</td>
+    </tr>`;
+  }).join("");
+
+  host.innerHTML = `<table class="traffic-table">
+    <thead><tr>
+      <th>router</th><th>peer</th><th>state</th>
+      <th class="num">msg</th><th class="num">pfx Δ</th>
+      <th class="num">rcd / snt</th><th class="num">last heard</th><th class="num">flaps</th>
+    </tr></thead>
+    <tbody>${body || '<tr><td colspan=8>no sessions</td></tr>'}</tbody>
+  </table>`;
+}
+
+function setActivityView(view) {
+  const v = view === "traffic" ? "traffic" : "events";
+  document.getElementById("events").hidden = v !== "events";
+  document.getElementById("traffic").hidden = v !== "traffic";
+  for (const id of ["view-events", "view-traffic"]) {
+    const el = document.getElementById(id);
+    if (el) el.setAttribute("aria-selected", el.dataset.view === v ? "true" : "false");
+  }
+  if (v === "traffic") renderTraffic();
+  else if (document.getElementById("activity-note")) {
+    document.getElementById("activity-note").textContent = "";
+  }
 }
 
 function renderDetail(name) {
@@ -317,3 +465,8 @@ function addEvent(ev) {
 }
 
 connect();
+
+for (const id of ["view-events", "view-traffic"]) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("click", (e) => setActivityView(e.currentTarget.dataset.view));
+}

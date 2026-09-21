@@ -131,3 +131,48 @@ footer h3 {
 }
 .summary-grid dt { color: #57606a; }
 .summary-grid dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* ---- the Activity pane: Events or Traffic -------------------------------
+   Events answers "what changed" and correctly falls silent on a healthy
+   fabric. Traffic answers "is anything moving", which an empty event list
+   cannot. */
+.footer-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.subtabs { display: inline-flex; gap: 2px; }
+.subtabs button {
+  font: inherit;
+  font-size: 12px;
+  color: #555;
+  background: #fff;
+  border: 1px solid #ccc;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.subtabs button:first-child { border-radius: 4px 0 0 4px; }
+.subtabs button:last-child { border-radius: 0 4px 4px 0; }
+.subtabs button[aria-selected="true"] { color: #111; background: #eef3fb; border-color: #4a7fd0; }
+.activity-note { color: #666; font-size: 12px; }
+
+.traffic { overflow: auto; max-height: 220px; }
+.traffic-table { width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+.traffic-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #555;
+  border-bottom: 1px solid #ddd;
+  padding: 2px 8px 3px 0;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: #fff;
+}
+.traffic-table td { padding: 3px 8px 3px 0; white-space: nowrap; }
+.traffic-table tbody tr { border-bottom: 1px solid #f0f0f0; }
+.traffic-table .num { text-align: right; }
+/* These must paint, or the view says nothing in colour it does not already
+   say in words. */
+.traffic-table .moving { color: #111; font-weight: 600; }
+.traffic-table .idle { color: #888; }
+.traffic-table .withdrew { color: #b42318; font-weight: 600; }
+.traffic-table .health-late { color: #a35f00; font-weight: 600; }
+.traffic-table .health-critical { color: #b42318; font-weight: 600; }
+.traffic-table .health-unknown { color: #888; font-style: italic; }
