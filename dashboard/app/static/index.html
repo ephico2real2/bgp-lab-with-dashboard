@@ -4,7 +4,11 @@
   <meta charset="utf-8">
   <title>BGP Lab Dashboard</title>
   <link rel="stylesheet" href="/static/styles.css">
-  <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+  <!-- Vendored, not fetched from a CDN at runtime. A lab that is demonstrating
+       BGP should not need the public internet to draw its own topology, and a
+       script pulled at page load is a third party in the trust boundary of
+       every run. Same version that was pinned in the URL: 3.30.4. -->
+  <script src="/static/vendor/cytoscape.min.js"></script>
 </head>
 <body>
   <header>

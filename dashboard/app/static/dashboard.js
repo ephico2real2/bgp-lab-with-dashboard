@@ -227,6 +227,23 @@ function updateGraph() {
   }
 }
 
+// esc renders a value as TEXT wherever it is put into markup.
+//
+// Everything below is built with template literals and assigned to innerHTML,
+// and none of it is the page's own data: it is whatever FRR reported, which is
+// in turn shaped by what a peer advertised and by names taken from the
+// topology file. Today's FRR output happens to be addresses, AS numbers and
+// state words, so nothing here is known to be exploitable — but that is a
+// property of FRR's formatting, not a promise this page makes, and the day a
+// field carries a "<" the page stops being a viewer and starts being a
+// renderer of someone else's markup. Escaping costs one function.
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  return String(v).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
 function renderDetail(name) {
   const data = lastState[name] || {};
   const summary = data.summary || {};
@@ -238,8 +255,8 @@ function renderDetail(name) {
 
   const peerRows = Object.entries(peers).map(([ip, info]) => {
     const cls = info.state === "Established" ? "" : "event-down";
-    return `<tr class="${cls}"><td>${ip}</td><td>AS${info.remoteAs ?? "?"}</td>
-            <td>${info.state ?? "?"}</td><td>${info.pfxRcd ?? "?"}</td></tr>`;
+    return `<tr class="${esc(cls)}"><td>${esc(ip)}</td><td>AS${esc(info.remoteAs ?? "?")}</td>
+            <td>${esc(info.state ?? "?")}</td><td>${esc(info.pfxRcd ?? "?")}</td></tr>`;
   }).join("");
 
   const routeRows = [];
@@ -253,20 +270,20 @@ function renderDetail(name) {
       const med = p.metric ?? p.med ?? "";
       const community = (p.community?.string) ?? "";
       routeRows.push(`<tr class="${isBest ? 'best' : ''}">
-        <td>${prefix}</td>
-        <td>${nh}</td>
-        <td class="aspath">${aspath}</td>
-        <td>${lp}</td>
-        <td>${med}</td>
-        <td class="community">${community}</td>
+        <td>${esc(prefix)}</td>
+        <td>${esc(nh)}</td>
+        <td class="aspath">${esc(aspath)}</td>
+        <td>${esc(lp)}</td>
+        <td>${esc(med)}</td>
+        <td class="community">${esc(community)}</td>
       </tr>`);
     }
   }
 
   sidebarContent.innerHTML = `
     <dl class="summary-grid">
-      <dt>Router-id</dt><dd>${ipv4.routerId ?? "?"}</dd>
-      <dt>RIB entries</dt><dd>${ipv4.ribCount ?? "?"}</dd>
+      <dt>Router-id</dt><dd>${esc(ipv4.routerId ?? "?")}</dd>
+      <dt>RIB entries</dt><dd>${esc(ipv4.ribCount ?? "?")}</dd>
       <dt>Peers</dt><dd>${Object.keys(peers).length}</dd>
     </dl>
     <h3>Neighbors</h3>
@@ -287,10 +304,10 @@ function addEvent(ev) {
   if (ev.kind === "session") {
     const cls = ev.state === "Established" ? "event-up" : "event-down";
     li.className = "event-session";
-    li.innerHTML = `<span class="${cls}">[${ev.ts}]</span> ${ev.node} ↔ AS${ev.remoteAs} (${ev.peer}) → <strong>${ev.state}</strong>`;
+    li.innerHTML = `<span class="${esc(cls)}">[${esc(ev.ts)}]</span> ${esc(ev.node)} ↔ AS${esc(ev.remoteAs)} (${esc(ev.peer)}) → <strong>${esc(ev.state)}</strong>`;
   } else if (ev.kind === "bestpath") {
     li.className = "event-bestpath";
-    li.innerHTML = `[${ev.ts}] ${ev.node} best-path for ${ev.prefix}: ${ev.from || "—"} → <strong>${ev.to || "—"}</strong>`;
+    li.innerHTML = `[${esc(ev.ts)}] ${esc(ev.node)} best-path for ${esc(ev.prefix)}: ${esc(ev.from || "—")} → <strong>${esc(ev.to || "—")}</strong>`;
   } else {
     li.textContent = `[${ev.ts}] ${JSON.stringify(ev)}`;
   }
