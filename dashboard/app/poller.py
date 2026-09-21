@@ -16,14 +16,21 @@ class LabPoller:
         lab_prefix: str,
         broadcast: Callable[[dict], Awaitable[None]],
         interval: float = 2.0,
+        exec_timeout: float = 5.0,
     ) -> None:
         self.topology_path = topology_path
         self.lab_prefix = lab_prefix
         self.broadcast = broadcast
         self.interval = interval
-        self.client = docker.from_env()
+        # A vtysh that never returns otherwise blocks its worker thread for
+        # ever: exec_run is two HTTP calls to the daemon, and without a timeout
+        # the read on exec_start has no deadline. One wedged router then stalls
+        # every poll, because poll_all gathers all of them.
+        self.client = docker.from_env(timeout=exec_timeout)
+        self.exec_timeout = exec_timeout
         self.nodes: list[dict[str, Any]] = self._load_nodes()
         self.last_state: dict[str, dict[str, Any]] = {}
+        self.last_signature: Any = None
 
     def _load_nodes(self) -> list[dict[str, Any]]:
         topology = yaml.safe_load(self.topology_path.read_text())
@@ -64,7 +71,16 @@ class LabPoller:
             else:
                 state[node["name"]] = result
 
-        if state == self.last_state:
+        # Compare what the page RENDERS, not the raw poll. The summary carries
+        # FRR's per-peer counters, and peerUptime advances with the clock, so
+        # `state == self.last_state` can never be true: measured at this
+        # interval against an idle fabric, it fired on 0 of 5 comparisons while
+        # msgRcvd, msgSent, peerUptime and peerUptimeMsec moved every tick. The
+        # counters still travel in the payload; they just no longer decide
+        # whether anything changed.
+        signature = self._signature(state)
+        if signature == self.last_signature:
+            self.last_state = state
             return
 
         try:
@@ -73,6 +89,7 @@ class LabPoller:
             print(f"[poller] diff failed: {exc}")
             events = []
         self.last_state = state
+        self.last_signature = signature
         await self.broadcast({"type": "state", "data": state})
         for ev in events:
             await self.broadcast({"type": "event", "data": ev})
@@ -103,6 +120,29 @@ class LabPoller:
             return json.loads(text[idx:])
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"bad json from {command}: {exc}; output={text[:200]}")
+
+    @classmethod
+    def _signature(cls, state: dict) -> tuple:
+        """What the page draws: the sessions and the chosen paths, nothing else.
+
+        Sorted at every level because FRR's JSON objects are dicts and Python
+        preserves insertion order, so an unsorted signature would change on
+        iteration order alone. The routes are included, not just the peers: a
+        withdrawal changes no peer state, and leaving them out would let the
+        RIB keep showing a prefix the events pane had just reported gone.
+        """
+        out = []
+        for node in sorted(state):
+            ndata = state.get(node) or {}
+            peers = cls._peers(ndata.get("summary") or {})
+            sessions = tuple(
+                (ip, (peers[ip] or {}).get("state"), (peers[ip] or {}).get("remoteAs"))
+                for ip in sorted(peers)
+            )
+            best = cls._best_paths(ndata.get("bgp") or {})
+            paths = tuple((prefix, best[prefix]) for prefix in sorted(best))
+            out.append((node, ndata.get("error"), sessions, paths))
+        return tuple(out)
 
     def _diff_events(self, prev: dict, curr: dict) -> list[dict]:
         events: list[dict] = []

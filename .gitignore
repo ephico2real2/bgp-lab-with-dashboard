@@ -2,3 +2,6 @@ ci/out/
 .tmp/
 __pycache__/
 *.pyc
+
+# local test virtualenv
+.venv-test/

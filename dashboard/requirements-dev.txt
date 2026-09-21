@@ -1,0 +1,4 @@
+# Test-only dependencies. The app's own pins live in requirements.txt and are
+# installed alongside these, because the poller imports docker and yaml at
+# module scope and the tests import the poller.
+pytest==8.3.3
