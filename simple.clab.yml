@@ -36,7 +36,12 @@ topology:
       image: vadaszgergo/bgp-dashboard:0.1.0
       image-pull-policy: IfNotPresent   # use cached image after first pull
       ports:
-        - 8088:8080
+        # Loopback only. `8088:8080` publishes on every interface the host has,
+        # so a dashboard with no authentication — it holds the Docker socket —
+        # was reachable from the network the moment the lab came up.
+        # compose/docker-compose.yml already does this; this is the
+        # containerlab path.
+        - 127.0.0.1:8088:8080
       env:
         LAB_TOPOLOGY: /lab/topology.yml
         LAB_PREFIX: clab-simple-lab
