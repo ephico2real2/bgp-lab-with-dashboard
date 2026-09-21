@@ -30,6 +30,15 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      # The unit tests run FIRST and on their own: they need no lab, no
+      # registry and no browser, so a logic regression fails here in seconds
+      # rather than after a ten-minute lab bring-up.
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet -r dashboard/requirements.txt -r dashboard/requirements-dev.txt
+          python3 -m pytest dashboard/tests -q
+
       - name: Build the dashboard image (linux/amd64,linux/arm64)
         id: image
         run: |
