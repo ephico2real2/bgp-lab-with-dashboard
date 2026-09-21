@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -17,6 +18,7 @@ class LabPoller:
         broadcast: Callable[[dict], Awaitable[None]],
         interval: float = 2.0,
         exec_timeout: float = 5.0,
+        events_ring: int = 500,
     ) -> None:
         self.topology_path = topology_path
         self.lab_prefix = lab_prefix
@@ -31,6 +33,13 @@ class LabPoller:
         self.nodes: list[dict[str, Any]] = self._load_nodes()
         self.last_state: dict[str, dict[str, Any]] = {}
         self.last_signature: Any = None
+        # Events were broadcast and forgotten: a page that connected after the
+        # `clear ip bgp *` — or simply reloaded — showed an empty Events pane
+        # while the fabric it was watching had just reconverged. They are kept
+        # here, oldest dropped first, and served over HTTP so a late page can
+        # catch up on what it missed.
+        self.events: deque[dict[str, Any]] = deque(maxlen=events_ring)
+        self.last_event_id = 0
 
     def _load_nodes(self) -> list[dict[str, Any]]:
         topology = yaml.safe_load(self.topology_path.read_text())
@@ -99,7 +108,23 @@ class LabPoller:
         await self.broadcast({"type": "state", "data": state})
         await self.broadcast({"type": "signal", "data": signal})
         for ev in events:
-            await self.broadcast({"type": "event", "data": ev})
+            await self.broadcast({"type": "event", "data": self.record_event(ev)})
+
+    def record_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Give an event a monotonic id and keep it.
+
+        The id is what lets a page ask for only what it has not seen
+        (`/api/events?since=`) and de-duplicate an event that arrives twice —
+        once in the catch-up fetch, once on the socket — without comparing
+        whole objects or trusting two events in the same millisecond to differ.
+        """
+        self.last_event_id += 1
+        event = dict(event, id=self.last_event_id)
+        self.events.append(event)
+        return event
+
+    def events_since(self, since: int = 0) -> list[dict[str, Any]]:
+        return [e for e in self.events if e["id"] > since]
 
     def _poll_node_sync(self, node: dict[str, Any]) -> dict[str, Any]:
         container_name = f"{self.lab_prefix}-{node['name']}"
@@ -230,33 +255,107 @@ class LabPoller:
             out.append((node, ndata.get("error"), sessions, paths))
         return tuple(out)
 
+    @staticmethod
+    def event_ts(now: float | None = None) -> str:
+        """RFC 3339, UTC, milliseconds.
+
+        `%H:%M:%S` in the container's local time was three problems in one
+        string: it carries no date, so it repeats every 24 hours and cannot be
+        put beside a router log; it is a different instant to a reader in
+        another zone, unlabelled; and at whole-second resolution the events of
+        one reconvergence — which happens inside a second — arrive with
+        identical stamps and no way to order them.
+        """
+        now = time.time() if now is None else now
+        whole = int(now)
+        ms = int(round((now - whole) * 1000))
+        if ms == 1000:          # rounding up at .9996 must carry into the second
+            whole, ms = whole + 1, 0
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{ms:03d}Z"
+
     def _diff_events(self, prev: dict, curr: dict) -> list[dict]:
         events: list[dict] = []
-        ts = time.strftime("%H:%M:%S")
+        # One stamp for the whole diff: these events were all read from the
+        # same poll, and giving them separate times would imply an ordering the
+        # measurement does not have. The ids order them.
+        ts = self.event_ts()
         for node, ndata in curr.items():
+            ndata = ndata or {}
             psum = (prev.get(node) or {}).get("summary") or {}
-            csum = (ndata or {}).get("summary") or {}
+            csum = ndata.get("summary") or {}
             ppeers = self._peers(psum)
             cpeers = self._peers(csum)
             for ip, info in cpeers.items():
                 pinfo = ppeers.get(ip)
-                if not pinfo or pinfo.get("state") != info.get("state"):
+                if pinfo is None:
+                    # A new peer was already emitted as a bare state change,
+                    # which reads as a transition out of nothing. Name it.
                     events.append({
                         "ts": ts,
                         "kind": "session",
+                        "change": "appeared",
                         "node": node,
                         "peer": ip,
                         "remoteAs": info.get("remoteAs"),
                         "state": info.get("state"),
                     })
+                elif pinfo.get("state") != info.get("state"):
+                    events.append({
+                        "ts": ts,
+                        "kind": "session",
+                        "change": "state",
+                        "node": node,
+                        "peer": ip,
+                        "remoteAs": info.get("remoteAs"),
+                        "state": info.get("state"),
+                        "was": pinfo.get("state"),
+                    })
+            # A peer that VANISHES from the table produces nothing above: the
+            # loop only walks what is still there. The session disappeared from
+            # the router — a dynamic neighbour that left, a `no neighbor`, a
+            # bgpd that died — and the page went on drawing its edge green,
+            # because with no peer data there is no new colour to paint.
+            #
+            # Only when the router ANSWERED, though. A poll that failed has an
+            # empty peers map for the same reason a dead router does, and
+            # "isp1 is unreachable" is not "isp1's four sessions are gone":
+            # one unreachable router would otherwise spray a vanished event
+            # per session and, when it answered again, an appeared event per
+            # session. We claim something is missing only after looking.
+            if not self._answered(ndata, "summary"):
+                continue
+            for ip, pinfo in ppeers.items():
+                if ip in cpeers:
+                    continue
+                events.append({
+                    "ts": ts,
+                    "kind": "session",
+                    "change": "vanished",
+                    "node": node,
+                    "peer": ip,
+                    "remoteAs": pinfo.get("remoteAs"),
+                    "was": pinfo.get("state"),
+                })
         # path-best changes
         for node, ndata in curr.items():
+            ndata = ndata or {}
             pbgp = (prev.get(node) or {}).get("bgp") or {}
-            cbgp = (ndata or {}).get("bgp") or {}
+            cbgp = ndata.get("bgp") or {}
             pbest = self._best_paths(pbgp)
             cbest = self._best_paths(cbgp)
             for prefix, nh in cbest.items():
-                if pbest.get(prefix) != nh and prefix in pbest:
+                if prefix not in pbest:
+                    # A prefix that ARRIVES. `prefix in pbest` excluded exactly
+                    # this: the lab could learn a route and say nothing.
+                    events.append({
+                        "ts": ts,
+                        "kind": "route",
+                        "node": node,
+                        "prefix": prefix,
+                        "change": "added",
+                        "to": nh,
+                    })
+                elif pbest.get(prefix) != nh:
                     events.append({
                         "ts": ts,
                         "kind": "bestpath",
@@ -265,7 +364,33 @@ class LabPoller:
                         "from": pbest.get(prefix),
                         "to": nh,
                     })
+            if not self._answered(ndata, "bgp"):
+                continue
+            for prefix, nh in pbest.items():
+                if prefix not in cbest:
+                    # A withdrawal. The RIB pane would otherwise keep showing a
+                    # prefix the events pane never mentioned losing. Same rule
+                    # as above: a failed poll has an empty table, and a router
+                    # we could not read has not withdrawn anything.
+                    events.append({
+                        "ts": ts,
+                        "kind": "route",
+                        "node": node,
+                        "prefix": prefix,
+                        "change": "withdrawn",
+                        "from": nh,
+                    })
         return events
+
+    @staticmethod
+    def _answered(ndata: dict, key: str) -> bool:
+        """True when this poll actually read `key` from the router.
+
+        An errored node and a router with nothing in its table look identical
+        downstream — both are an empty dict — so the difference has to be read
+        here, from whether the poll produced the view at all.
+        """
+        return not ndata.get("error") and isinstance(ndata.get(key), dict)
 
     @staticmethod
     def _peers(summary: dict) -> dict:

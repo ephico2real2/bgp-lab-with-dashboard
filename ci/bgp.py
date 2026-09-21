@@ -261,6 +261,47 @@ def cmd_dashboard(args) -> int:
     return 0
 
 
+RFC3339_MS = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def cmd_events(args) -> int:
+    """The event history a reloading page catches up from.
+
+    Three properties, because each one is a defect the dashboard had: the ring
+    answers at all (events used to be broadcast and forgotten), the ids are
+    strictly increasing (they are what `since` and de-duplication stand on),
+    and every stamp is RFC 3339 UTC with milliseconds (it used to be the
+    container's local HH:MM:SS, undateable and unorderable).
+    """
+    try:
+        data = load_json(sys.stdin.read())
+    except json.JSONDecodeError as e:
+        print("bgp.py: not JSON: %s" % e, file=sys.stderr)
+        return 2
+    if not isinstance(data, dict):
+        print("events: not an object", file=sys.stderr)
+        return 2
+    events = data.get("events") if isinstance(data.get("events"), list) else []
+    ids = [e.get("id") for e in events if isinstance(e, dict)]
+    bad_stamp = [e.get("ts") for e in events
+                 if isinstance(e, dict) and not RFC3339_MS.match(str(e.get("ts") or ""))]
+    ordered = all(isinstance(a, int) and isinstance(b, int) and b > a
+                  for a, b in zip(ids, ids[1:]))
+    span = "%s..%s" % (ids[0], ids[-1]) if ids else "none"
+    print("ready=%s events=%s ids=%s lastId=%s stamps=%s" % (
+        data.get("ready"), len(events), span, data.get("lastId"),
+        "rfc3339" if not bad_stamp else "BAD:" + str(bad_stamp[0])))
+    if args.expect_ready and data.get("ready") is not True:
+        return 1
+    if len(events) < args.min_events:
+        return 1
+    if bad_stamp or not ordered:
+        return 1
+    if args.expect_first_id and (not ids or ids[0] != args.expect_first_id):
+        return 1
+    return 0
+
+
 def cmd_peer_states(args) -> int:
     try:
         data = load_json(sys.stdin.read())
@@ -333,6 +374,12 @@ def main(argv: list[str]) -> int:
     b.add_argument("--expect-nodes", default="")
     b.add_argument("--expect-asns", default="")
     b.set_defaults(func=cmd_dashboard)
+
+    e = sub.add_parser("events", parents=[root_p])
+    e.add_argument("--expect-ready", action="store_true")
+    e.add_argument("--min-events", type=int, default=0)
+    e.add_argument("--expect-first-id", type=int, default=0)
+    e.set_defaults(func=cmd_events)
 
     s = sub.add_parser("peer-states", parents=[root_p])
     s.add_argument("--require-other", action="store_true")

@@ -112,6 +112,22 @@ async function waitFor(label, limitSec, pred) {
     return s.ready === true && nodes.length === 4;
   });
 
+  // The events pane must carry history BEFORE anything happens in this walk:
+  // the page fetches /api/events over HTTP on load. Events used to be
+  // broadcast and forgotten, so a page that arrived after the lab converged —
+  // which is every page, in CI — showed an empty pane.
+  const startEvents = Date.now();
+  await page.waitForFunction(
+    () => document.querySelectorAll("#events li").length > 0,
+    { timeout: 30000 }
+  );
+  const onLoad = await page.evaluate(() => {
+    const li = document.querySelector("#events li");
+    return { n: document.querySelectorAll("#events li").length, ts: li.title };
+  });
+  log(`events pane on load: ${onLoad.n} line(s), newest stamped ${onLoad.ts} ` +
+      `(${((Date.now() - startEvents) / 1000).toFixed(1)} s)`);
+
   await page.waitForTimeout(1000);
   await page.screenshot({ path: `${OUT}/01-steady.png`, fullPage: true });
   log(`wrote ${OUT}/01-steady.png`);
@@ -165,6 +181,30 @@ async function waitFor(label, limitSec, pred) {
   await page.waitForTimeout(1000);
   await page.screenshot({ path: `${OUT}/03-recovered.png`, fullPage: true });
   log(`wrote ${OUT}/03-recovered.png`);
+
+  // A reload must not empty the pane. This is the other half of the same fix:
+  // the history survives the page, so what the outage above recorded is still
+  // readable afterwards.
+  const beforeReload = await page.evaluate(
+    () => document.querySelectorAll("#events li").length
+  );
+  await page.reload({ waitUntil: "load", timeout: 30000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll("#events li").length > 0,
+    { timeout: 30000 }
+  );
+  const afterReload = await page.evaluate(
+    () => document.querySelectorAll("#events li").length
+  );
+  if (afterReload < beforeReload) {
+    throw new Error(
+      `a reload lost history: ${beforeReload} lines before, ${afterReload} after`
+    );
+  }
+  log(`events survive a reload: ${beforeReload} before, ${afterReload} after`);
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${OUT}/04-history.png`, fullPage: true });
+  log(`wrote ${OUT}/04-history.png`);
 
   await browser.close();
   fs.writeFileSync(LOG, lines.join("\n") + "\n");

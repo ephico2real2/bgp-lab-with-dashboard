@@ -19,8 +19,35 @@ const STATE_COLORS = {
   OpenSent: "#9a6700",
   OpenConfirm: "#9a6700",
   Idle: "#cf222e",
+  // Not an FRR state: the session is no longer in either router's table. It
+  // is drawn red rather than grey because "the peer is gone" is a failure, not
+  // an absence of information.
+  vanished: "#cf222e",
   unknown: "#8b8b8b",
 };
+
+// How long a vanished session's edge stays on the graph before it is removed.
+// Long enough for a human who looked away to see WHAT went missing — an edge
+// that disappears the instant it fails leaves nothing to read.
+const VANISHED_GRACE_MS = 30000;
+
+// How bad each state is. Anything FRR adds later ranks worst, so an unknown
+// state is never quietly treated as healthy.
+const STATE_RANK = { Established: 0, OpenConfirm: 1, OpenSent: 1, Connect: 1, Active: 2, Idle: 3 };
+
+function stateRank(state) {
+  const s = String(state || "").trim();
+  for (const key of Object.keys(STATE_RANK)) {
+    if (s.startsWith(key)) return STATE_RANK[key];
+  }
+  return 4;
+}
+
+function worseState(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return stateRank(b) > stateRank(a) ? b : a;
+}
 
 // stateColor matches on a PREFIX, not the whole string.
 //
@@ -52,7 +79,10 @@ function connect() {
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   setStatus("connecting…", "status-connecting");
 
-  ws.onopen = () => setStatus("connected", "status-connected");
+  ws.onopen = () => {
+    setStatus("connected", "status-connected");
+    catchUp();
+  };
   ws.onclose = () => {
     setStatus("disconnected", "status-disconnected");
     setTimeout(connect, 2000);
@@ -119,28 +149,67 @@ function buildElements() {
         edge = { id: key, source: a, target: b };
         edges.set(key, edge);
       }
-      // peerIp belongs to the OTHER side of the session as seen from n.name
-      if (remote === edge.source)  edge.sourceIP = peerIp;
-      else                         edge.targetIP = peerIp;
-      // Take the freshest non-empty state we encounter
-      if (info.state) edge.state = info.state;
+      // peerIp belongs to the OTHER side of the session as seen from n.name,
+      // and info.state is THIS node's view of it — so the state belongs to the
+      // end peerIp is not on. Both are kept: the edge takes one colour, and a
+      // reader looking at a red link needs to see which end called it down.
+      if (remote === edge.source) {
+        edge.sourceIP = peerIp;
+        edge.targetState = info.state;
+      } else {
+        edge.targetIP = peerIp;
+        edge.sourceState = info.state;
+      }
+      // The WORSE of the two ends, not whichever was iterated last.
+      //
+      // A session has two views and they disagree while it is coming up or
+      // going down: one end can still read Established while the other has
+      // already gone to Idle. Taking the last one seen made the edge's colour
+      // depend on the order Object.entries happened to yield, so the same
+      // fabric could draw a half-down link green or red on alternating polls.
+      // The worse end is the honest one — a link is only up when both ends
+      // agree it is.
+      if (info.state) edge.state = worseState(edge.state, info.state);
     }
   }
 
   for (const e of edges.values()) {
+    // When the two ends disagree, each end's label names its own state: the
+    // edge is one colour and it cannot say by itself that leaf1 still reads
+    // Established while spine has already gone to Idle.
+    const split = e.sourceState && e.targetState && e.sourceState !== e.targetState;
     els.push({
       data: {
         id: e.id,
         source: e.source,
         target: e.target,
         state: e.state || "unknown",
-        sourceLabel: e.sourceIP || "",
-        targetLabel: e.targetIP || "",
+        sourceState: e.sourceState || "",
+        targetState: e.targetState || "",
+        // On its own line, not in parentheses: these labels sit between two
+        // nodes that the layout may place close together, and the width is
+        // what collides. A second line costs 12 px of height and nothing of
+        // width.
+        sourceLabel: (e.sourceIP || "") + (split ? `\n${e.sourceState}` : ""),
+        targetLabel: (e.targetIP || "") + (split ? `\n${e.targetState}` : ""),
       },
     });
   }
 
   return els;
+}
+
+// Which routers this poll actually READ. A router whose poll failed has no
+// peers for the same reason a router with no sessions has none, and the page
+// must not read the first as the second: "we could not reach isp1" is not
+// "isp1's sessions are gone".
+function reportedNodes() {
+  const out = new Set();
+  for (const n of nodes) {
+    const d = lastState[n.name];
+    if (d && !d.error && d.summary && typeof d.summary === "object") out.add(n.name);
+  }
+  return out;
 }
 
 function buildGraph() {
@@ -167,6 +236,15 @@ function buildGraph() {
           "width": 80,
           "height": 60,
           "shape": "round-rectangle",
+          // Cytoscape draws nodes above edges regardless of z-index while a
+          // node's comparison is `auto` — so a label that reached a node was
+          // cut off by it. Measured against the vendored 3.30.4 with a long
+          // label and two nodes 180 px apart: default and manual-on-the-EDGE
+          // both rendered "0.10.2 (Idle (Admi"; manual on the NODE, with a
+          // z-index below the edge's, rendered "10.0.10.2 (Idle (Admin))"
+          // whole. The address is what the label is for.
+          "z-index-compare": "manual",
+          "z-index": 1,
         },
       },
       {
@@ -197,6 +275,7 @@ function buildGraph() {
           "target-label": "data(targetLabel)",
           "source-text-offset": 50,
           "target-text-offset": 50,
+          "text-wrap": "wrap",
           "font-size": "9px",
           "font-family": "ui-monospace, SFMono-Regular, Menlo, monospace",
           "color": "#1f2328",
@@ -209,6 +288,13 @@ function buildGraph() {
           "text-border-opacity": 1,
           "z-index": 10,
         },
+      },
+      {
+        // A session that is no longer in either router's table. Dashed as well
+        // as red so it is distinguishable from a peer that is merely down: one
+        // is a session failing, the other is a session that no longer exists.
+        selector: "edge[state = 'vanished']",
+        style: { "line-style": "dashed", "opacity": 0.75 },
       },
     ],
     layout: { name: "cose", animate: false, padding: 30 },
@@ -237,12 +323,40 @@ function updateGraph() {
       if (existing.data("state") !== el.data.state) {
         existing.data("state", el.data.state);
       }
+      for (const k of ["sourceState", "targetState"]) {
+        if (existing.data(k) !== el.data[k]) existing.data(k, el.data[k]);
+      }
       if (el.data.sourceLabel && existing.data("sourceLabel") !== el.data.sourceLabel) {
         existing.data("sourceLabel", el.data.sourceLabel);
       }
       if (el.data.targetLabel && existing.data("targetLabel") !== el.data.targetLabel) {
         existing.data("targetLabel", el.data.targetLabel);
       }
+      // It is back. Whatever it looks like now, it is no longer missing.
+      if (existing.data("vanishedAt")) existing.data("vanishedAt", 0);
+    }
+  }
+
+  // An edge NOT in the rebuilt set is a session neither router reports any
+  // more. Keeping it painted with its last colour was the defect: a peer that
+  // disappeared — a dynamic neighbour that left, `no neighbor`, a dead bgpd —
+  // left a green line behind it, because with no peer data there is no new
+  // colour to paint. Mark it, hold it long enough to be read, then drop it.
+  const present = new Set(elements.map((el) => el.data.id));
+  const reported = reportedNodes();
+  const now = Date.now();
+  for (const edge of cy.edges()) {
+    if (present.has(edge.id())) continue;
+    // Both ends have to have answered. Otherwise a poller that lost its
+    // Docker socket — every node erroring at once — would quietly delete the
+    // whole topology's edges while the page still said "connected".
+    if (!reported.has(edge.data("source")) || !reported.has(edge.data("target"))) continue;
+    const since = edge.data("vanishedAt");
+    if (!since) {
+      edge.data("vanishedAt", now);
+      edge.data("state", "vanished");
+    } else if (now - since >= VANISHED_GRACE_MS) {
+      edge.remove();
     }
   }
 }
@@ -447,24 +561,108 @@ function renderDetail(name) {
   `;
 }
 
+// eventClock renders the server's RFC 3339 UTC stamp on the READER's clock,
+// and keeps the stamp itself as the tooltip. The payload carries the instant;
+// the line carries the time the reader recognises. Milliseconds are shown
+// because a reconvergence happens inside one second and the events of it would
+// otherwise all read the same.
+function eventClock(ts) {
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return { text: String(ts ?? ""), title: String(ts ?? "") };
+  const p = (n, w = 2) => String(n).padStart(w, "0");
+  const text = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  return { text, title: String(ts) };
+}
+
+// Ids already rendered, so an event delivered twice — once in the catch-up
+// fetch, once on the socket — is drawn once. Pruned with the list it mirrors.
+const renderedEvents = new Set();
+let lastEventId = 0;
+
 function addEvent(ev) {
+  if (!ev) return;
+  if (ev.id !== undefined && ev.id !== null) {
+    if (renderedEvents.has(ev.id)) return;
+    renderedEvents.add(ev.id);
+    if (ev.id > lastEventId) lastEventId = ev.id;
+  }
   const li = document.createElement("li");
+  if (ev.id !== undefined && ev.id !== null) li.dataset.eventId = String(ev.id);
+  const clock = eventClock(ev.ts);
+  li.title = clock.title;
+  const stamp = esc(clock.text);
   if (ev.kind === "session") {
-    const cls = ev.state === "Established" ? "event-up" : "event-down";
+    const gone = ev.change === "vanished";
+    const cls = !gone && ev.state === "Established" ? "event-up" : "event-down";
+    const who = `${esc(ev.node)} ↔ AS${esc(ev.remoteAs)} (${esc(ev.peer)})`;
     li.className = "event-session";
-    li.innerHTML = `<span class="${esc(cls)}">[${esc(ev.ts)}]</span> ${esc(ev.node)} ↔ AS${esc(ev.remoteAs)} (${esc(ev.peer)}) → <strong>${esc(ev.state)}</strong>`;
+    if (gone) {
+      li.innerHTML = `<span class="${esc(cls)}">[${stamp}]</span> ${who} <strong>vanished</strong> (was ${esc(ev.was || "?")})`;
+    } else if (ev.change === "appeared") {
+      li.innerHTML = `<span class="${esc(cls)}">[${stamp}]</span> ${who} appeared <strong>${esc(ev.state)}</strong>`;
+    } else {
+      li.innerHTML = `<span class="${esc(cls)}">[${stamp}]</span> ${who} ${esc(ev.was || "—")} → <strong>${esc(ev.state)}</strong>`;
+    }
+  } else if (ev.kind === "route") {
+    const withdrawn = ev.change === "withdrawn";
+    li.className = withdrawn ? "event-route event-down" : "event-route";
+    li.innerHTML = withdrawn
+      ? `[${stamp}] ${esc(ev.node)}: <strong>${esc(ev.prefix)}</strong> withdrawn (was via ${esc(ev.from || "—")})`
+      : `[${stamp}] ${esc(ev.node)}: <strong>${esc(ev.prefix)}</strong> added via ${esc(ev.to || "—")}`;
   } else if (ev.kind === "bestpath") {
     li.className = "event-bestpath";
-    li.innerHTML = `[${esc(ev.ts)}] ${esc(ev.node)} best-path for ${esc(ev.prefix)}: ${esc(ev.from || "—")} → <strong>${esc(ev.to || "—")}</strong>`;
+    li.innerHTML = `[${stamp}] ${esc(ev.node)} best-path for ${esc(ev.prefix)}: ${esc(ev.from || "—")} → <strong>${esc(ev.to || "—")}</strong>`;
   } else {
-    li.textContent = `[${ev.ts}] ${JSON.stringify(ev)}`;
+    li.textContent = `[${clock.text}] ${JSON.stringify(ev)}`;
   }
   eventsEl.prepend(li);
   // cap at 100 lines
-  while (eventsEl.children.length > 100) eventsEl.removeChild(eventsEl.lastChild);
+  while (eventsEl.children.length > 100) {
+    const dropped = eventsEl.lastChild;
+    eventsEl.removeChild(dropped);
+    const id = dropped && dropped.dataset ? dropped.dataset.eventId : null;
+    if (id) renderedEvents.delete(Number(id));
+  }
 }
 
-connect();
+// catchUp asks for what the page missed. It runs on every socket open, not
+// only the first: the reconnect gap is two seconds at best, and every event in
+// it used to be lost with no trace that anything had been missed.
+async function catchUp() {
+  try {
+    const res = await fetch(`/api/events?since=${lastEventId}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const body = await res.json();
+    for (const ev of body.events || []) addEvent(ev);
+  } catch (err) {
+    // The socket is the primary path; a failed catch-up costs history, not
+    // the live view, so it must not stop the page from connecting.
+    console.warn("events catch-up failed", err);
+  }
+}
+
+// The page used to render nothing at all until the socket delivered a
+// snapshot: a slow, proxied or blocked WebSocket showed an empty page with no
+// explanation of what it was waiting for. HTTP first, then the stream.
+async function bootstrap() {
+  try {
+    const res = await fetch("/api/state", { cache: "no-store" });
+    if (res.ok) {
+      const body = await res.json();
+      if (body.ready) {
+        nodes = body.nodes || [];
+        lastState = body.data || {};
+        buildGraph();
+      }
+    }
+  } catch (err) {
+    console.warn("state bootstrap failed", err);
+  }
+  await catchUp();
+  connect();
+}
+
+bootstrap();
 
 for (const id of ["view-events", "view-traffic"]) {
   const el = document.getElementById(id);

@@ -93,8 +93,71 @@ def split_top_level(e: str) -> list[str]:
     return [o for o in out if o]
 
 
+IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+INTERPOLATION = re.compile(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}")
+
+
+def read_expression(src: str, i: int) -> str:
+    """The expression starting at i, up to the `;` or line end that closes it.
+
+    Depth-aware over (), [], {} and template literals, because the values this
+    resolves are template literals that span lines and contain both braces and
+    semicolons inside their `${...}`.
+    """
+    start, depth, quote, tick = i, 0, "", 0
+    while i < len(src):
+        c = src[i]
+        if quote:
+            if c == "\\":
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if tick:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "$" and src[i + 1:i + 2] == "{":
+                depth += 1
+                i += 2
+                continue
+            if c == "}" and depth:
+                depth -= 1
+            elif c == "`":
+                tick -= 1
+            i += 1
+            continue
+        if c in "\"'":
+            quote = c
+        elif c == "`":
+            tick += 1
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and (c == ";" or c == "\n"):
+            break
+        i += 1
+    return src[start:i].strip()
+
+
+def sole_assignment(src: str, name: str) -> str | None:
+    """The one `const/let/var <name> = <expr>` in the file, or None.
+
+    None when the name is declared more than once: which value reaches the page
+    then depends on which one ran, and reading one of them proves nothing.
+    """
+    found = [read_expression(src, m.end())
+             for m in re.finditer(rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*", src)]
+    return found[0] if len(found) == 1 else None
+
+
 def markup_templates(src: str) -> list[str]:
-    """Every template literal in the file that builds MARKUP.
+    r"""Every template literal in the file that builds MARKUP.
 
     Not just the ones assigned to innerHTML. The peer rows and the route rows
     are built in their own literals and interpolated into the innerHTML
@@ -153,21 +216,32 @@ def test_every_innerhtml_interpolation_is_escaped():
         """routeRows.join("") || '<tr><td colspan=6>empty</td></tr>'""",
         # a class name chosen between two literals the page owns
         """isBest ? 'best' : ''""",
-        # markup the traffic rows built out of already-escaped values
+        # markup the traffic rows built out of already-escaped values. These
+        # two stay named rather than resolved: their definitions are ternaries
+        # over template literals, which split_top_level would cut at the `?`
+        # inside a `${}`. Both literals carry a <span>, so markup_templates
+        # collects them in their own right and their interpolations are
+        # checked there — the name is exempt, the definition is not.
         "msgs",
         "pfx",
         """body || '<tr><td colspan=8>no sessions</td></tr>'""",
     }
 
-    def is_safe(e: str) -> bool:
+    def is_safe(e: str, seen: frozenset = frozenset()) -> bool:
         """An expression is safe when every value it can produce is safe.
 
         A rule rather than a list: split on the operators that choose between
-        values (?, :, ||, &&) and require each operand to be a source literal
-        or an esc(...) call. That covers `x ? "a" : "b"` and
-        `cond ? esc(v) : "-"` without naming either, and still rejects a bare
-        field. Only a variable holding markup the page built needs an entry in
-        `allowed`, because its safety is a fact about how it was made.
+        values (?, :, ||, &&) and require each operand to be a source literal,
+        an esc(...) call, or a NAME the file assigns exactly once to something
+        that is itself safe. That covers `x ? "a" : "b"`, `cond ? esc(v) : "-"`
+        and a line built up in a local, without naming any of them, and still
+        rejects a bare field.
+
+        Resolving the name matters more than exempting it: a `const who =
+        `${esc(ev.node)}…`` contains no tag, so it is not collected as markup
+        on its own, and an entry in `allowed` would make an esc() dropped
+        INSIDE it invisible to this test. Following the assignment checks the
+        definition instead of trusting it.
         """
         if e in allowed:
             return True
@@ -184,12 +258,22 @@ def test_every_innerhtml_interpolation_is_escaped():
                 continue
             if wrapped_in_esc(o):
                 continue
+            if IDENT.fullmatch(o) and o not in seen:
+                rhs = sole_assignment(src, o)
+                if rhs is not None and value_is_safe(rhs, seen | {o}):
+                    continue
             return False
         return True
 
+    def value_is_safe(expr: str, seen: frozenset) -> bool:
+        """A resolved definition: a template literal, or any other expression."""
+        if expr.startswith("`") and expr.endswith("`"):
+            return all(is_safe(m.strip(), seen)
+                       for m in INTERPOLATION.findall(expr))
+        return is_safe(expr, seen)
+
     unescaped = [e for tpl in templates
-                 for e in (x.strip() for x in
-                           re.findall(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", tpl))
+                 for e in (x.strip() for x in INTERPOLATION.findall(tpl))
                  if not is_safe(e)]
     assert not unescaped, (
         "these go into innerHTML without esc(): " + "; ".join(unescaped)

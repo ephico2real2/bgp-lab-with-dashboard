@@ -206,6 +206,48 @@ else
   fi
 fi
 
+# 7. the event history a reloading page catches up from. Two calls, because
+# `since` is the whole point: one for the ring, one for the gap.
+ev_raw=""
+ev_rc=0
+ev_raw=$(curl -fsS --max-time 5 "${DASHBOARD_URL}/api/events?since=0" 2>&1) || ev_rc=$?
+if [ "$ev_rc" -ne 0 ]; then
+  row fail "dashboard /api/events history" "curl rc=${ev_rc}" \
+    "GET ${DASHBOARD_URL}/api/events?since=0 ready=true, ids increasing, RFC 3339 stamps"
+else
+  measured=""
+  prc=0
+  measured=$(printf '%s' "$ev_raw" | python3 "$BGP_PY" events --expect-ready --min-events 1) || prc=$?
+  if [ "$prc" -eq 0 ]; then
+    row ok "dashboard /api/events history" "$measured" \
+      "GET ${DASHBOARD_URL}/api/events?since=0 ready=true, ids increasing, RFC 3339 stamps"
+  else
+    row fail "dashboard /api/events history" "$measured" \
+      "GET ${DASHBOARD_URL}/api/events?since=0 ready=true, ids increasing, RFC 3339 stamps"
+  fi
+
+  last_id=$(printf '%s' "$ev_raw" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastId") or 0)')
+  gap_from=$(( last_id > 0 ? last_id - 1 : 0 ))
+  gap_raw=""
+  gap_rc=0
+  gap_raw=$(curl -fsS --max-time 5 "${DASHBOARD_URL}/api/events?since=${gap_from}" 2>&1) || gap_rc=$?
+  if [ "$gap_rc" -ne 0 ]; then
+    row fail "dashboard /api/events since" "curl rc=${gap_rc}" \
+      "GET ?since=${gap_from} returns only id ${last_id}"
+  else
+    measured=""
+    prc=0
+    measured=$(printf '%s' "$gap_raw" | python3 "$BGP_PY" events --min-events 1 --expect-first-id "$last_id") || prc=$?
+    if [ "$prc" -eq 0 ]; then
+      row ok "dashboard /api/events since" "$measured" \
+        "GET ?since=${gap_from} returns only id ${last_id}"
+    else
+      row fail "dashboard /api/events since" "$measured" \
+        "GET ?since=${gap_from} returns only id ${last_id}"
+    fi
+  fi
+fi
+
 echo
 echo "simple-lab check: $fails FAIL"
 exit "$fails"

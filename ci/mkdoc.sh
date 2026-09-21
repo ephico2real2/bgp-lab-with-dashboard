@@ -62,6 +62,7 @@ timings_body=$(read_or_missing "$timings_file")
 shot1="${shot_base:+$shot_base/01-steady.png}"
 shot2="${shot_base:+$shot_base/02-sessions-down.png}"
 shot3="${shot_base:+$shot_base/03-recovered.png}"
+shot4="${shot_base:+$shot_base/04-history.png}"
 digest_line=${digest:-"(not pushed)"}
 
 mkdir -p "$(dirname "$out")"
@@ -112,6 +113,15 @@ $(if [ -n "$shot2" ]; then echo "![02-sessions-down](${shot2})"; else echo "(no 
 Sessions Established again after isp1's peers come back.
 
 $(if [ -n "$shot3" ]; then echo "![03-recovered](${shot3})"; else echo "(no screenshot URL)"; fi)
+
+### 04-history
+
+The same page after a reload. The events pane is served from a ring buffer
+over \`GET /api/events?since=<id>\`, so the outage above is still readable
+after the page is thrown away and rebuilt — events used to be broadcast and
+forgotten, and a reload emptied the pane.
+
+$(if [ -n "$shot4" ]; then echo "![04-history](${shot4})"; else echo "(no screenshot URL)"; fi)
 
 ## Check
 

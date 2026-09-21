@@ -6,6 +6,7 @@ runs.
 """
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,10 @@ def test_the_signal_is_broadcast_on_a_tick_that_changes_nothing():
     poller.nodes = [{"name": "leaf1", "asn": 65101}]
     poller.last_state = {}
     poller.last_signature = None
+    # __init__ is skipped above, so the event ring has to be built by hand:
+    # poll_all records every event it broadcasts.
+    poller.events = deque(maxlen=500)
+    poller.last_event_id = 0
 
     async def drive(states):
         for st in states:
