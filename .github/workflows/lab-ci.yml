@@ -30,6 +30,15 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      # The unit tests run FIRST and on their own: they need no lab, no
+      # registry and no browser, so a logic regression fails here in seconds
+      # rather than after a ten-minute lab bring-up.
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet -r dashboard/requirements.txt -r dashboard/requirements-dev.txt
+          python3 -m pytest dashboard/tests -q
+
       - name: Build the dashboard image (linux/amd64,linux/arm64)
         id: image
         run: |
@@ -172,18 +181,41 @@ jobs:
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
           git remote set-url origin "https://github.com/${REPO}.git"
           extra=(-c "http.extraheader=AUTHORIZATION: basic ${AUTH}")
-          rm -rf .tmp/cap
-          git worktree prune
-          if git "${extra[@]}" ls-remote --exit-code --heads origin ci-captures >/dev/null 2>&1; then
-            git "${extra[@]}" fetch -q origin ci-captures
-            git worktree add -q .tmp/cap origin/ci-captures
-          else
-            git worktree add -q --detach .tmp/cap
-            (cd .tmp/cap && git checkout -q --orphan ci-captures && git rm -rfq . >/dev/null 2>&1 || true)
+          # ci-captures is a shared branch and every run pushes to it, so two
+          # runs that finish together race: merging two PRs a minute apart had
+          # the second rejected with "(fetch first) ... another repository
+          # pushing to the same ref" and failed a job whose lab and checks had
+          # all passed.
+          #
+          # Each run writes its OWN timestamped directory, so a loser has no
+          # conflict to resolve — only a stale base. Rebuild on the current tip
+          # and push again. Five attempts with a jittered wait; the jitter
+          # matters because two runners retrying in lockstep collide again.
+          publish_captures() {
+            rm -rf .tmp/cap
+            git worktree prune
+            if git "${extra[@]}" ls-remote --exit-code --heads origin ci-captures >/dev/null 2>&1; then
+              git "${extra[@]}" fetch -q origin ci-captures
+              git worktree add -q .tmp/cap origin/ci-captures
+            else
+              git worktree add -q --detach .tmp/cap
+              (cd .tmp/cap && git checkout -q --orphan ci-captures && git rm -rfq . >/dev/null 2>&1 || true)
+            fi
+            mkdir -p ".tmp/cap/${DIR}"
+            cp "$OUT"/*.png ci/out/walk.log ".tmp/cap/${DIR}/" 2>/dev/null || cp "$OUT"/*.png ".tmp/cap/${DIR}/"
+            (cd .tmp/cap && git add -A && git commit -qm "captures: ${DIR}" \
+              && git "${extra[@]}" push -q origin "HEAD:ci-captures")
+          }
+          pushed=no
+          for attempt in 1 2 3 4 5; do
+            if publish_captures; then pushed=yes; break; fi
+            echo "captures push attempt ${attempt} lost the race; rebuilding on the current tip" >&2
+            sleep $(( attempt * 3 + RANDOM % 5 ))
+          done
+          if [ "$pushed" != yes ]; then
+            echo "could not publish the captures after 5 attempts" | tee -a "$GITHUB_STEP_SUMMARY" >&2
+            exit 1
           fi
-          mkdir -p ".tmp/cap/${DIR}"
-          cp "$OUT"/*.png ci/out/walk.log ".tmp/cap/${DIR}/" 2>/dev/null || cp "$OUT"/*.png ".tmp/cap/${DIR}/"
-          (cd .tmp/cap && git add -A && git commit -qm "captures: ${DIR}" && git "${extra[@]}" push -q origin "HEAD:ci-captures")
           {
             echo "## Captures — [\`${DIR}\`](https://github.com/${REPO}/tree/ci-captures/${DIR})"
             echo

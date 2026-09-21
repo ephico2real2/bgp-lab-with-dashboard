@@ -1,0 +1,34 @@
+{
+ "10.200.1.3": {
+  "bgpState": "Established",
+  "bgpTimerHoldTimeMsecs": 9000,
+  "bgpTimerKeepAliveIntervalMsecs": 3000,
+  "bgpTimerLastRead": 1000,
+  "bgpTimerLastWrite": 1000,
+  "connectionsDropped": 10,
+  "hostname": "spine",
+  "remoteAs": 65100
+ },
+ "172.20.0.3": {
+  "bgpState": "Established",
+  "bgpTimerHoldTimeMsecs": 9000,
+  "bgpTimerKeepAliveIntervalMsecs": 3000,
+  "bgpTimerLastRead": 3000,
+  "bgpTimerLastWrite": 3000,
+  "connectionsDropped": 0,
+  "hostname": "eg-poc1-colima-control-plane",
+  "peerGroup": "SERVERS",
+  "remoteAs": 65021
+ },
+ "172.20.0.4": {
+  "bgpState": "Established",
+  "bgpTimerHoldTimeMsecs": 9000,
+  "bgpTimerKeepAliveIntervalMsecs": 3000,
+  "bgpTimerLastRead": 0,
+  "bgpTimerLastWrite": 0,
+  "connectionsDropped": 0,
+  "hostname": "eg-poc1-colima-worker",
+  "peerGroup": "SERVERS",
+  "remoteAs": 65021
+ }
+}
