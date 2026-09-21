@@ -44,9 +44,9 @@ def has_top_level_ternary(e: str) -> bool:
             continue
         if c in "\"'":
             quote = c
-        elif c in "([":
+        elif c in "([{":
             depth += 1
-        elif c in ")]":
+        elif c in ")]}":
             depth -= 1
         elif c == "?" and depth == 0 and e[i:i + 2] != "??":
             return True
@@ -76,9 +76,9 @@ def split_top_level(e: str) -> list[str]:
             buf += c
             i += 1
             continue
-        if c in "([":
+        if c in "([{":
             depth += 1
-        elif c in ")]":
+        elif c in ")]}":
             depth -= 1
         if depth == 0:
             if e[i:i + 2] in ("||", "&&"):
@@ -94,7 +94,81 @@ def split_top_level(e: str) -> list[str]:
 
 
 IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
-INTERPOLATION = re.compile(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}")
+
+
+def interpolations(tpl: str) -> list[str]:
+    r"""Every `${...}` in a template body, brace-balanced.
+
+    The regex this replaces — `\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}` — handled
+    ONE level of nested braces and skipped an interpolation with two: measured,
+    `${fmt(r, {opts: {raw: true}})}` matched nothing at all, so the expression
+    was never offered to is_safe and the unescaped field it rendered went into
+    innerHTML with the whole suite green. An interpolation this cannot read has
+    to end up in the list and be rejected, never be invisible.
+    """
+    out, i = [], 0
+    while i < len(tpl) - 1:
+        if tpl[i] == "\\":
+            i += 2
+            continue
+        if not (tpl[i] == "$" and tpl[i + 1] == "{"):
+            i += 1
+            continue
+        depth, j = 1, i + 2
+        while j < len(tpl) and depth:
+            c = tpl[j]
+            if c == "\\":
+                j += 2
+                continue
+            if c in "\"'":
+                j += 1
+                while j < len(tpl) and tpl[j] != c:
+                    j += 2 if tpl[j] == "\\" else 1
+                j += 1
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+            j += 1
+        out.append(tpl[i + 2:j - 1])
+        i = j
+    return out
+
+
+ASSIGN = r"(?<![=!<>+\-*/%&|^])\b{name}\s*=(?![=>])"
+
+
+def bound_elsewhere(src: str, name: str) -> bool:
+    """True when `name` is more than the one declaration this file resolves.
+
+    sole_assignment searches the WHOLE file and knows nothing of scope, and a
+    declaration is not the only way a name gets a value. Both of these were
+    measured against this guard, and both passed it:
+
+      * `let stamp = esc(clock.text); if (ev.raw) stamp = ev.ts;` — declared
+        once, safely, and rendered as the other value.
+      * a second function whose PARAMETER is called `who`, resolving to the
+        `const who` of an unrelated one and rendering raw text.
+
+    So a name is followed only when it is bound exactly once, in a declaration,
+    and never rebound.
+    """
+    decls = re.findall(rf"\b(?:const|let|var)\s+{re.escape(name)}\s*=\s*", src)
+    if len(re.findall(ASSIGN.format(name=re.escape(name)), src)) != len(decls):
+        return True
+    n = re.escape(name)
+    for pattern in (
+        rf"function\s*[A-Za-z0-9_$]*\s*\([^)]*\b{n}\b[^)]*\)",                # a parameter
+        rf"\([^()]*\b{n}\b[^()]*\)\s*=>",                                     # an arrow parameter
+        rf"\b{n}\s*=>",                                                       # a bare arrow parameter
+        rf"for\s*\(\s*(?:const|let|var)\s+{n}\b",                             # a loop binding
+        rf"\bcatch\s*\(\s*{n}\s*\)",                                          # a caught error
+        rf"(?:const|let|var)\s*[\[{{][^\]}}]*\b{n}\b[^\]}}]*[\]}}]\s*=",      # destructuring
+    ):
+        if re.search(pattern, src):
+            return True
+    return False
 
 
 def read_expression(src: str, i: int) -> str:
@@ -227,6 +301,9 @@ def test_every_innerhtml_interpolation_is_escaped():
         """body || '<tr><td colspan=8>no sessions</td></tr>'""",
     }
 
+    def resolvable(name: str) -> bool:
+        return not bound_elsewhere(src, name)
+
     def is_safe(e: str, seen: frozenset = frozenset()) -> bool:
         """An expression is safe when every value it can produce is safe.
 
@@ -244,7 +321,10 @@ def test_every_innerhtml_interpolation_is_escaped():
         definition instead of trusting it.
         """
         if e in allowed:
-            return True
+            # An exempted NAME is still only as good as its single binding: the
+            # exemption says its definition is markup this page built, not that
+            # anything may be assigned to it later.
+            return not IDENT.fullmatch(e) or resolvable(e)
         parts = split_top_level(e)
         # In `cond ? a : b` only a and b are rendered — the condition is never
         # put on the page, so requiring it to be escaped rejected every
@@ -258,7 +338,7 @@ def test_every_innerhtml_interpolation_is_escaped():
                 continue
             if wrapped_in_esc(o):
                 continue
-            if IDENT.fullmatch(o) and o not in seen:
+            if IDENT.fullmatch(o) and o not in seen and resolvable(o):
                 rhs = sole_assignment(src, o)
                 if rhs is not None and value_is_safe(rhs, seen | {o}):
                     continue
@@ -269,11 +349,11 @@ def test_every_innerhtml_interpolation_is_escaped():
         """A resolved definition: a template literal, or any other expression."""
         if expr.startswith("`") and expr.endswith("`"):
             return all(is_safe(m.strip(), seen)
-                       for m in INTERPOLATION.findall(expr))
+                       for m in interpolations(expr))
         return is_safe(expr, seen)
 
     unescaped = [e for tpl in templates
-                 for e in (x.strip() for x in INTERPOLATION.findall(tpl))
+                 for e in (x.strip() for x in interpolations(tpl))
                  if not is_safe(e)]
     assert not unescaped, (
         "these go into innerHTML without esc(): " + "; ".join(unescaped)

@@ -306,6 +306,24 @@ function buildGraph() {
   });
 }
 
+// updateGraph is the only thing that sweeps a vanished edge away, and it runs
+// on a `state` frame — which the poller sends ONLY when the signature changed.
+// Measured against the running lab: 24 s of a steady fabric delivered 11
+// `signal` frames and 0 `state` frames. So the poll that made a peer vanish is
+// normally the last state frame for a long while, and an edge marked by it
+// would sit dashed on the graph until something else on the fabric changed —
+// for ever on a fabric that then stays quiet. The grace is a timer.
+let vanishSweepArmed = false;
+
+function scheduleVanishSweep() {
+  if (vanishSweepArmed) return;
+  vanishSweepArmed = true;
+  setTimeout(() => {
+    vanishSweepArmed = false;
+    updateGraph();
+  }, VANISHED_GRACE_MS + 250);
+}
+
 function updateGraph() {
   if (!cy) return buildGraph();
 
@@ -345,6 +363,7 @@ function updateGraph() {
   const present = new Set(elements.map((el) => el.data.id));
   const reported = reportedNodes();
   const now = Date.now();
+  let counting = false;
   for (const edge of cy.edges()) {
     if (present.has(edge.id())) continue;
     // Both ends have to have answered. Otherwise a poller that lost its
@@ -355,10 +374,15 @@ function updateGraph() {
     if (!since) {
       edge.data("vanishedAt", now);
       edge.data("state", "vanished");
+      counting = true;
     } else if (now - since >= VANISHED_GRACE_MS) {
       edge.remove();
+    } else {
+      counting = true;
     }
   }
+  // An edge is counting down and nothing promises another state frame.
+  if (counting) scheduleVanishSweep();
 }
 
 // esc renders a value as TEXT wherever it is put into markup.
@@ -628,11 +652,22 @@ function addEvent(ev) {
 // catchUp asks for what the page missed. It runs on every socket open, not
 // only the first: the reconnect gap is two seconds at best, and every event in
 // it used to be lost with no trace that anything had been missed.
-async function catchUp() {
+async function catchUp(retry = true) {
   try {
     const res = await fetch(`/api/events?since=${lastEventId}`, { cache: "no-store" });
     if (!res.ok) return;
     const body = await res.json();
+    // A poller that restarted issues its ids from 1 again, and every one of
+    // them is an id this page has already marked rendered: the socket's events
+    // would be swallowed one by one until the new process passed the old
+    // high-water mark, on a page that still said "connected". A lastId BELOW
+    // the id we hold cannot have come from the process that gave us that id —
+    // that is the tell. Forget the numbering and ask again from nothing.
+    if (typeof body.lastId === "number" && body.lastId < lastEventId) {
+      renderedEvents.clear();
+      lastEventId = 0;
+      if (retry) return catchUp(false);
+    }
     for (const ev of body.events || []) addEvent(ev);
   } catch (err) {
     // The socket is the primary path; a failed catch-up costs history, not

@@ -343,3 +343,28 @@ def test_a_poll_that_reports_an_error_is_not_trusted_even_with_a_table(poller):
     prev = {"isp1": node({"10.0.0.1": peer()}, routes({"10.0.0.0/24": ["10.1.1.1"]}))}
     curr = {"isp1": {"error": "vtysh timed out", **node({}, routes())}}
     assert poller._diff_events(prev, curr) == []
+
+
+def test_a_router_that_answers_again_does_not_re_announce_its_sessions(poller):
+    """The other half of the same guard.
+
+    A poll that failed produces no `vanished` events — but the poll that
+    SUCCEEDS after it has an empty previous reading to diff against, so every
+    session reads as new and every prefix as added. Measured on this lab's
+    isp1, four sessions and two prefixes: one timed-out poll cost six events
+    that describe nothing that happened.
+    """
+    good = {"isp1": node({"10.0.10.1": peer(), "10.0.11.1": peer()},
+                         routes({"10.1.1.0/24": ["10.0.10.1"]}))}
+    for unread in ({"error": "RuntimeError('vtysh timed out')"},
+                   {"summary": None, "bgp": None},
+                   {}):
+        assert poller._diff_events({"isp1": unread}, good) == [], unread
+
+
+def test_the_poll_after_a_recovery_is_diffed_normally(poller):
+    """Silence lasts one poll, not for ever: once there is a reading to compare
+    against, the next change is reported as usual."""
+    good = {"isp1": node({"10.0.10.1": peer("Established")})}
+    down = {"isp1": node({"10.0.10.1": peer("Idle")})}
+    assert kinds(poller._diff_events(good, down)) == [("session", "state")]

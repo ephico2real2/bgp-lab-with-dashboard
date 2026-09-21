@@ -226,7 +226,12 @@ else
       "GET ${DASHBOARD_URL}/api/events?since=0 ready=true, ids increasing, RFC 3339 stamps"
   fi
 
-  last_id=$(printf '%s' "$ev_raw" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastId") or 0)')
+  # `|| last_id=0`, because this runs under `set -euo pipefail`: measured with
+  # a 200 carrying an HTML error page, the bare form aborted the script — the
+  # `since` row and the `N FAIL` summary were never printed and it exited 1,
+  # which reads as one failure rather than the two rows it owes. A dead
+  # endpoint is a FAIL row, never a missing one.
+  last_id=$(printf '%s' "$ev_raw" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastId") or 0)' 2>/dev/null) || last_id=0
   gap_from=$(( last_id > 0 ? last_id - 1 : 0 ))
   gap_raw=""
   gap_rc=0

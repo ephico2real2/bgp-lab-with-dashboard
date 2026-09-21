@@ -33,6 +33,7 @@ function el(id) {
 
 function makeContext() {
   const byId = new Map();
+  const timers = [];
   const document = {
     getElementById(id) {
       if (!byId.has(id)) byId.set(id, el(id));
@@ -50,7 +51,11 @@ function makeContext() {
     WebSocket: function () { return { close() {} }; },
     cytoscape: () => { throw new Error("buildGraph must not run in the harness"); },
     location: { protocol: "http:", host: "127.0.0.1:8089" },
-    setTimeout: () => 0,
+    // Timers are RECORDED, not run. The page arms one to sweep a vanished edge
+    // away, and a stub that swallowed it would let that timer disappear without
+    // a single case noticing.
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    setImmediate,
     Date,
     JSON,
     Math,
@@ -69,11 +74,22 @@ globalThis.__t = {
   setState: (v) => { lastState = v; },
   setCy: (v) => { cy = v; },
   buildElements, updateGraph, worseState, stateRank, stateColor, addEvent,
-  eventClock, VANISHED_GRACE_MS,
+  eventClock, VANISHED_GRACE_MS, connect, catchUp,
   eventsEl,
 };`;
   vm.runInContext(src, ctx, { filename: "dashboard.js" });
-  return ctx.__t;
+  // ctx is the sandbox's global object: a case that needs a different fetch, or
+  // a WebSocket it can drive, assigns it here — AFTER the module has loaded, so
+  // the load-time bootstrap() still stalls on the never-settling default.
+  return Object.assign(ctx.__t, {
+    ctx,
+    timers,
+    runTimers: () => {
+      const due = timers.splice(0, timers.length);
+      for (const timer of due) timer.fn();
+      return due.length;
+    },
+  });
 }
 
 // ---- a Cytoscape stub, only what updateGraph calls -------------------------
@@ -196,6 +212,41 @@ const CASES = {
     }
   },
 
+  "a vanished edge is swept away even when no further state frame arrives": (t) => {
+    // The poller broadcasts `state` only when the signature CHANGED, and
+    // updateGraph is the only thing that removes a marked edge. Measured on the
+    // running lab: 24 s of a steady fabric delivered 11 `signal` frames and 0
+    // `state` frames — so the poll that made the peer vanish is the last one
+    // that will call updateGraph, and the grace has to be a timer.
+    t.setNodes(twoRouters);
+    const cy = fakeCy([
+      { id: "leaf1" }, { id: "spine" },
+      { id: "leaf1--spine", source: "leaf1", target: "spine", state: "Established" },
+    ]);
+    t.setCy(cy);
+    t.setState({ leaf1: { summary: { ipv4Unicast: { peers: {} } } },
+                 spine: { summary: { ipv4Unicast: { peers: {} } } } });
+    const realNow = Date.now;
+    try {
+      let now = 3_000_000;
+      Date.now = () => now;
+      t.updateGraph();                       // the one and only state frame
+      eq(cy.store.get("leaf1--spine").state, "vanished", "the edge is marked");
+      if (!t.timers.length) throw new Error("nothing was scheduled to sweep it away");
+      if (!(t.timers[0].ms >= t.VANISHED_GRACE_MS)) {
+        throw new Error(`swept after ${t.timers[0].ms} ms, before the grace was up`);
+      }
+      t.updateGraph();
+      t.updateGraph();
+      eq(t.timers.length, 1, "one sweep is armed, not one per state frame");
+      now += t.VANISHED_GRACE_MS + 1000;
+      t.runTimers();
+      if (cy.store.has("leaf1--spine")) throw new Error("the dead edge is still on the graph");
+    } finally {
+      Date.now = realNow;
+    }
+  },
+
   "a session that comes back stops counting down": (t) => {
     t.setNodes(twoRouters);
     const cy = fakeCy([
@@ -252,6 +303,40 @@ const CASES = {
     }
   },
 
+  "the labels of an existing edge are repainted, not only drawn once": (t) => {
+    // buildGraph runs once; every later change reaches the graph through
+    // updateGraph. A per-end state that is only ever set at first build is a
+    // state the reader never sees change.
+    t.setNodes(twoRouters);
+    t.setState(stateOf({ fromLeaf: "Established", fromSpine: "Established" }));
+    const cy = fakeCy(t.buildElements().map((e) => e.data));
+    t.setCy(cy);
+    t.setState(stateOf({ fromLeaf: "Established", fromSpine: "Idle" }));
+    t.updateGraph();
+    const e = cy.store.get("leaf1--spine");
+    eq([e.sourceState, e.targetState], ["Established", "Idle"], "per-end states on the live edge");
+    eq(e.sourceLabel, "10.0.0.1\nEstablished", "source label repainted");
+    eq(e.targetLabel, "10.0.0.2\nIdle", "target label repainted");
+    eq(e.state, "Idle", "and the edge takes the worse end");
+  },
+
+  "every socket open asks for the gap, not only the first": async (t) => {
+    // The reconnect gap is two seconds at best and every event in it is
+    // delivered to nobody: the socket carries no history of its own.
+    const asked = [];
+    t.ctx.fetch = (url) => {
+      asked.push(String(url));
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ready: true, events: [], lastId: 0 }) });
+    };
+    let sock = null;
+    t.ctx.WebSocket = function () { sock = this; this.close = () => {}; };
+    t.connect();
+    if (!sock || typeof sock.onopen !== "function") throw new Error("connect() opened no socket");
+    sock.onopen();
+    await new Promise((r) => setImmediate(r));
+    eq(asked.filter((u) => u.includes("/api/events")).length, 1, "catch-up fetches on socket open");
+  },
+
   "an event delivered twice is drawn once": (t) => {
     const before = t.eventsEl.children.length;
     const ev = { id: 4242, kind: "session", change: "state", node: "leaf1",
@@ -264,6 +349,40 @@ const CASES = {
     eq(t.eventsEl.children.length - before, 2, "a different id is a different event");
   },
 
+  "a poller that restarted does not silence the page": async (t) => {
+    // Ids restart at 1 with the process. A page holding lastEventId=32 asks
+    // `since=32`, is told the truth — lastId=2 — and would otherwise go on
+    // suppressing every id it has already seen once, drawing nothing at all
+    // until the new poller passed 32.
+    for (let i = 1; i <= 32; i += 1) {
+      t.addEvent({ id: i, kind: "session", change: "state", node: "leaf1", peer: "10.0.0.2",
+                   remoteAs: 65100, state: "Idle", was: "Established", ts: "2026-09-21T10:00:00.000Z" });
+    }
+    const before = t.eventsEl.children.length;
+    // The stub FILTERS on `since`, exactly as /api/events does — a stub that
+    // returned its whole body whatever was asked would pass even if the page
+    // kept asking from the old high-water mark, which is the half of this bug
+    // that silences the pane.
+    const fresh = [
+      { id: 1, kind: "session", change: "appeared", node: "leaf1", peer: "10.0.0.2",
+        remoteAs: 65100, state: "Established", ts: "2026-09-21T11:00:00.000Z" },
+      { id: 2, kind: "route", change: "added", node: "leaf1", prefix: "10.9.9.0/24",
+        to: "10.0.0.2", ts: "2026-09-21T11:00:00.000Z" },
+    ];
+    const asked = [];
+    t.ctx.fetch = (url) => {
+      const since = Number(new URL(String(url), "http://x").searchParams.get("since") || 0);
+      asked.push(since);
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ ready: true, lastId: 2, events: fresh.filter((e) => e.id > since) }),
+      });
+    };
+    await t.catchUp();
+    eq(asked, [32, 0], "asks again from nothing once the restart is recognised");
+    eq(t.eventsEl.children.length - before, 2, "the new poller's events are drawn");
+  },
+
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {
     const c = t.eventClock("2026-09-21T10:00:00.250Z");
     if (!/^\d{2}:\d{2}:\d{2}\.\d{3}$/.test(c.text)) throw new Error(`text: ${c.text}`);
@@ -274,13 +393,15 @@ const CASES = {
   },
 };
 
-const results = [];
-for (const [name, fn] of Object.entries(CASES)) {
-  try {
-    fn(makeContext());
-    results.push({ name, ok: true, detail: "" });
-  } catch (err) {
-    results.push({ name, ok: false, detail: String(err && err.message || err) });
+(async () => {
+  const results = [];
+  for (const [name, fn] of Object.entries(CASES)) {
+    try {
+      await fn(makeContext());      // a case may be async: two of them drive fetch
+      results.push({ name, ok: true, detail: "" });
+    } catch (err) {
+      results.push({ name, ok: false, detail: String(err && err.message || err) });
+    }
   }
-}
-process.stdout.write(JSON.stringify({ cases: results }));
+  process.stdout.write(JSON.stringify({ cases: results }));
+})();

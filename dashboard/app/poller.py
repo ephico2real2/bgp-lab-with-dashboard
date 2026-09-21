@@ -281,13 +281,24 @@ class LabPoller:
         ts = self.event_ts()
         for node, ndata in curr.items():
             ndata = ndata or {}
-            psum = (prev.get(node) or {}).get("summary") or {}
+            pnode = prev.get(node)
+            psum = (pnode or {}).get("summary") or {}
             csum = ndata.get("summary") or {}
             ppeers = self._peers(psum)
             cpeers = self._peers(csum)
+            # The same rule, applied backwards. A router we could not read LAST
+            # time has an empty peers map for the same reason a dead one does,
+            # so every session it reports now looks new: measured on this lab's
+            # isp1, one timed-out poll cost four `appeared` events and two
+            # `added` ones, describing nothing that happened. `pnode is None` is
+            # the other case — a router never read at all — and that first sight
+            # IS worth naming.
+            saw_peers = pnode is None or self._answered(pnode, "summary")
             for ip, info in cpeers.items():
                 pinfo = ppeers.get(ip)
                 if pinfo is None:
+                    if not saw_peers:
+                        continue
                     # A new peer was already emitted as a bare state change,
                     # which reads as a transition out of nothing. Name it.
                     events.append({
@@ -339,12 +350,16 @@ class LabPoller:
         # path-best changes
         for node, ndata in curr.items():
             ndata = ndata or {}
-            pbgp = (prev.get(node) or {}).get("bgp") or {}
+            pnode = prev.get(node)
+            pbgp = (pnode or {}).get("bgp") or {}
             cbgp = ndata.get("bgp") or {}
             pbest = self._best_paths(pbgp)
             cbest = self._best_paths(cbgp)
+            saw_table = pnode is None or self._answered(pnode, "bgp")
             for prefix, nh in cbest.items():
                 if prefix not in pbest:
+                    if not saw_table:
+                        continue
                     # A prefix that ARRIVES. `prefix in pbest` excluded exactly
                     # this: the lab could learn a route and say nothing.
                     events.append({
