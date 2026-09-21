@@ -15,6 +15,84 @@ JS = STATIC / "dashboard.js"
 HTML = STATIC / "index.html"
 
 
+
+def wrapped_in_esc(e: str) -> bool:
+    """True when the WHOLE expression is one esc(...) call.
+
+    `e.startswith("esc(") and e.endswith(")")` is not enough: it also accepts
+    `esc(a) + b`, where b is unescaped.
+    """
+    if not e.startswith("esc("):
+        return False
+    depth = 0
+    for i, c in enumerate(e):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i == len(e) - 1
+    return False
+
+
+def has_top_level_ternary(e: str) -> bool:
+    depth, quote = 0, ""
+    for i, c in enumerate(e):
+        if quote:
+            if c == quote:
+                quote = ""
+            continue
+        if c in "\"'":
+            quote = c
+        elif c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        elif c == "?" and depth == 0 and e[i:i + 2] != "??":
+            return True
+    return False
+
+
+def split_top_level(e: str) -> list[str]:
+    """Split on ?, :, || and && that choose between values, at depth 0 only.
+
+    Depth matters: `esc(x ?? "?")` contains a `?` that belongs to the call, and
+    splitting there produced the fragment `esc(r.s.state ?` — which is neither
+    a literal nor a complete call, so every escaped field failed. `??` is a
+    default, not a choice between two rendered values, so it is not a split.
+    """
+    out, buf, depth, i = [], "", 0, 0
+    quote = ""
+    while i < len(e):
+        c = e[i]
+        if quote:
+            buf += c
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in "\"'":
+            quote = c
+            buf += c
+            i += 1
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        if depth == 0:
+            if e[i:i + 2] in ("||", "&&"):
+                out.append(buf.strip()); buf = ""; i += 2; continue
+            if e[i:i + 2] == "??":       # a default, not a choice
+                buf += "??"; i += 2; continue
+            if c in "?:":
+                out.append(buf.strip()); buf = ""; i += 1; continue
+        buf += c
+        i += 1
+    out.append(buf.strip())
+    return [o for o in out if o]
+
+
 def markup_templates(src: str) -> list[str]:
     """Every template literal in the file that builds MARKUP.
 
@@ -75,19 +153,44 @@ def test_every_innerhtml_interpolation_is_escaped():
         """routeRows.join("") || '<tr><td colspan=6>empty</td></tr>'""",
         # a class name chosen between two literals the page owns
         """isBest ? 'best' : ''""",
+        # markup the traffic rows built out of already-escaped values
+        "msgs",
+        "pfx",
+        """body || '<tr><td colspan=8>no sessions</td></tr>'""",
     }
 
-    unescaped = []
-    for tpl in templates:
-        for expr in re.findall(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", tpl):
-            e = expr.strip()
-            # A literal in the source is the page's own text, not input.
-            if re.fullmatch(r"""['"][^'"]*['"]""", e):
+    def is_safe(e: str) -> bool:
+        """An expression is safe when every value it can produce is safe.
+
+        A rule rather than a list: split on the operators that choose between
+        values (?, :, ||, &&) and require each operand to be a source literal
+        or an esc(...) call. That covers `x ? "a" : "b"` and
+        `cond ? esc(v) : "-"` without naming either, and still rejects a bare
+        field. Only a variable holding markup the page built needs an entry in
+        `allowed`, because its safety is a fact about how it was made.
+        """
+        if e in allowed:
+            return True
+        parts = split_top_level(e)
+        # In `cond ? a : b` only a and b are rendered — the condition is never
+        # put on the page, so requiring it to be escaped rejected every
+        # perfectly safe `x > 0 ? "moving" : "idle"`.
+        if has_top_level_ternary(e) and len(parts) > 1:
+            parts = parts[1:]
+        for o in parts:
+            if not o:
                 continue
-            if e in allowed:
+            if re.fullmatch(r"""['"][^'"]*['"]""", o):
                 continue
-            if not e.startswith("esc("):
-                unescaped.append(e)
+            if wrapped_in_esc(o):
+                continue
+            return False
+        return True
+
+    unescaped = [e for tpl in templates
+                 for e in (x.strip() for x in
+                           re.findall(r"\$\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", tpl))
+                 if not is_safe(e)]
     assert not unescaped, (
         "these go into innerHTML without esc(): " + "; ".join(unescaped)
     )
@@ -137,3 +240,17 @@ def test_the_dashboard_is_published_on_loopback_only(path, needle):
     every interface put it on the network the moment the lab came up."""
     root = Path(__file__).resolve().parents[2]
     assert needle in (root / path).read_text(), f"{path} does not publish on loopback"
+
+
+def test_a_qualified_state_is_not_dropped_into_the_unknown_colour():
+    """FRR qualifies a state with a reason: an administrative shutdown reads
+    "Idle (Admin)". An exact key lookup misses it, so the one session a human
+    had just taken down was the one the graph refused to draw as down."""
+    src = JS.read_text()
+    assert "function stateColor(" in src, "stateColor() is gone"
+    # the edge style must go through it, not index the table directly
+    assert not re.search(r'STATE_COLORS\[e\.data\("state"\)\]', src), (
+        "the edge style still indexes STATE_COLORS by the exact state string")
+    assert 'stateColor(e.data("state"))' in src, "the edge style does not use stateColor()"
+    m = re.search(r"function stateColor\(state\)\s*\{(.+?)\n\}", src, re.S)
+    assert m and "startsWith" in m.group(1), "stateColor() does not match on a prefix"

@@ -25,8 +25,16 @@
     </aside>
   </main>
   <footer>
-    <h3>Events</h3>
+    <div class="footer-head">
+      <h3>Activity</h3>
+      <div class="subtabs" role="tablist" aria-label="Events or traffic">
+        <button type="button" role="tab" id="view-events" data-view="events" aria-selected="true">Events</button>
+        <button type="button" role="tab" id="view-traffic" data-view="traffic" aria-selected="false">Traffic</button>
+      </div>
+      <span id="activity-note" class="activity-note"></span>
+    </div>
     <ul id="events"></ul>
+    <div id="traffic" class="traffic" hidden></div>
   </footer>
   <script src="/static/dashboard.js"></script>
 </body>
