@@ -75,7 +75,9 @@ globalThis.__t = {
   setCy: (v) => { cy = v; },
   buildElements, updateGraph, worseState, stateRank, stateColor, addEvent,
   eventClock, VANISHED_GRACE_MS, connect, catchUp,
-  eventsEl,
+  eventsEl, sidebarContent,
+  setSelected: (v) => { selectedNode = v; },
+  trafficEl: document.getElementById("traffic"),
 };`;
   vm.runInContext(src, ctx, { filename: "dashboard.js" });
   // ctx is the sandbox's global object: a case that needs a different fetch, or
@@ -381,6 +383,199 @@ const CASES = {
     await t.catchUp();
     eq(asked, [32, 0], "asks again from nothing once the restart is recognised");
     eq(t.eventsEl.children.length - before, 2, "the new poller's events are drawn");
+  },
+
+  "a second session that vanishes later is swept on its own timer": (t) => {
+    // One sweep per countdown, not one per page: the sweep that removes the
+    // first edge has to arm another while a second edge is still inside its
+    // grace, and the flag it sets has to be cleared when it fires. Neither
+    // was asserted: a flag that was never cleared, and a sweep that ignored
+    // an edge still counting, both passed every case.
+    t.setNodes([{ name: "a", asn: 1 }, { name: "b", asn: 2 }, { name: "c", asn: 3 }]);
+    const cy = fakeCy([
+      { id: "a" }, { id: "b" }, { id: "c" },
+      { id: "a--b", source: "a", target: "b", state: "Established" },
+      { id: "b--c", source: "b", target: "c", state: "Established" },
+    ]);
+    t.setCy(cy);
+    const answered = (peers) => ({ summary: { ipv4Unicast: { peers } } });
+    const bc = { "10.0.1.2": { remoteAs: 3, state: "Established" } };
+    const cb = { "10.0.1.1": { remoteAs: 2, state: "Established" } };
+    const realNow = Date.now;
+    try {
+      let now = 5_000_000;
+      Date.now = () => now;
+      t.setState({ a: answered({}), b: answered(bc), c: answered(cb) });
+      t.updateGraph();                                   // a--b vanishes
+      now += 20_000;
+      t.setState({ a: answered({}), b: answered({}), c: answered({}) });
+      t.updateGraph();                                   // b--c vanishes; the first sweep is still pending
+      now += t.VANISHED_GRACE_MS + 250 - 20_000;
+      eq(t.runTimers(), 1, "the first sweep fires");
+      eq(cy.store.has("a--b"), false, "the first edge is gone");
+      eq(cy.store.has("b--c"), true, "the second is still inside its grace");
+      eq(t.timers.length, 1, "and a sweep is armed for it");
+      now += t.VANISHED_GRACE_MS + 250;
+      eq(t.runTimers(), 1, "the second sweep fires");
+      eq(cy.store.has("b--c"), false, "the second edge is gone");
+      cy.add({ data: { id: "a--c", source: "a", target: "c", state: "Established" } });
+      t.updateGraph();
+      eq(t.timers.length, 1, "a countdown that starts after both fired arms a fresh sweep");
+    } finally {
+      Date.now = realNow;
+    }
+  },
+
+  "a closed socket is reopened, not left disconnected": (t) => {
+    // The poller restarts on every redeploy. A page that did not reconnect
+    // would read "disconnected" until someone reloaded it.
+    let opened = 0;
+    let sock = null;
+    t.ctx.WebSocket = function () { opened += 1; sock = this; this.close = () => {}; };
+    t.connect();
+    eq(opened, 1, "one socket");
+    sock.onclose();
+    const retry = t.timers.find((x) => x.fn === t.connect);
+    if (!retry) throw new Error("nothing was scheduled to reconnect after the socket closed");
+    if (!(retry.ms >= 1000 && retry.ms <= 10000)) throw new Error(`reconnects after ${retry.ms} ms`);
+    retry.fn();
+    eq(opened, 2, "a second socket is opened");
+  },
+
+  "the newest event is at the top of the pane": (t) => {
+    t.addEvent({ id: 1, kind: "route", change: "added", node: "a", prefix: "10.0.0.0/24", to: "x", ts: "2026-09-21T10:00:00.000Z" });
+    t.addEvent({ id: 2, kind: "route", change: "added", node: "a", prefix: "10.0.1.0/24", to: "x", ts: "2026-09-21T10:00:01.000Z" });
+    eq(t.eventsEl.children[0].dataset.eventId, "2", "the event added last is first");
+    eq(t.eventsEl.children[1].dataset.eventId, "1", "and the older one is below it");
+  },
+
+  "the clock shows the reader's zone, not UTC": (t) => {
+    // The format regex alone passes a clock that prints UTC hours. Node
+    // re-reads TZ on every access, so the reader's zone can be set here.
+    const realTZ = process.env.TZ;
+    try {
+      process.env.TZ = "Etc/GMT+5";               // five hours WEST of UTC (POSIX sign), no DST
+      eq(t.eventClock("2026-09-21T10:00:00.250Z").text, "05:00:00.250", "10:00Z read five hours west");
+      process.env.TZ = "Etc/GMT-9";               // nine hours east
+      eq(t.eventClock("2026-09-21T10:00:00.250Z").text, "19:00:00.250", "10:00Z read nine hours east");
+    } finally {
+      if (realTZ === undefined) delete process.env.TZ; else process.env.TZ = realTZ;
+    }
+  },
+
+  "a state frame repaints the selected router's sidebar": (t) => {
+    t.setNodes(twoRouters);
+    t.setState(stateOf({ fromLeaf: "Established", fromSpine: "Established" }));
+    t.setCy(fakeCy(t.buildElements().map((e) => e.data)));
+    let sock = null;
+    t.ctx.WebSocket = function () { sock = this; this.close = () => {}; };
+    t.connect();
+    t.setSelected("leaf1");
+    sock.onmessage({ data: JSON.stringify({ type: "state", data: stateOf({ fromLeaf: "Idle", fromSpine: "Idle" }) }) });
+    if (!/Idle/.test(t.sidebarContent.innerHTML)) throw new Error("the sidebar still shows the state before the frame");
+  },
+
+  "a signal frame repaints the Traffic view while it is showing": (t) => {
+    let sock = null;
+    t.ctx.WebSocket = function () { sock = this; this.close = () => {}; };
+    t.connect();
+    t.trafficEl.hidden = false;
+    sock.onmessage({ data: JSON.stringify({ type: "signal", data: { leaf1: { "10.0.0.2": {
+      state: "Established", hasDelta: true, dRcvd: 3, dSent: 1, dPfxRcd: 0, dPfxSnt: 0,
+      msgRcvd: 10, msgSent: 10, pfxRcd: 2, pfxSnt: 2, flaps: 0, hasTimers: false } } } }) });
+    if (!/10\.0\.0\.2/.test(t.trafficEl.innerHTML)) throw new Error("the Traffic view was not repainted from the signal frame");
+  },
+
+  "a vanished session is drawn as a failure, not as unknown": (t) => {
+    eq(t.stateColor("vanished"), t.stateColor("Idle"), "the same colour as a session that is down");
+    if (t.stateColor("vanished") === t.stateColor("")) throw new Error("vanished is drawn in the unknown colour");
+  },
+
+  "a restart whose first poll is as long as the page's history is still recognised": async (t) => {
+    // Measured on this lab: the first poll of a fresh poller issues 18 events
+    // (10 appeared, 8 added). A page holding 18 ids asks `since=18` and is
+    // told lastId=18 — not below what it holds — so the id tell alone misses
+    // the restart and all 18 new events are suppressed by ids the page marked
+    // rendered in the previous process. The process has to name itself.
+    const burst = (hour) => Array.from({ length: 18 }, (_, i) => ({
+      id: i + 1, kind: "session", change: "appeared", node: "leaf1", peer: `10.9.${i}.1`,
+      remoteAs: 65100, state: "Established", ts: `2026-09-21T${hour}:00:00.000Z` }));
+    let ring = burst("10");
+    let epoch = "epoch-a";                              // opaque on purpose: the page compares, never parses
+    const asked = [];
+    t.ctx.fetch = (url) => {
+      const since = Number(new URL(String(url), "http://x").searchParams.get("since") || 0);
+      asked.push(since);
+      const events = ring.filter((e) => e.id > since);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ready: true, epoch, lastId: ring.length, events }) });
+    };
+    await t.catchUp();
+    eq(t.eventsEl.children.length, 18, "the first process's history is drawn");
+    ring = burst("11");
+    epoch = "epoch-b";                                  // the poller restarted and re-read the fabric
+    await t.catchUp();
+    eq(asked, [0, 18, 0], "the new process is recognised and asked from nothing");
+    eq(t.eventsEl.children.length, 36, "all 18 of the new process's events are drawn");
+  },
+
+  "rows numbered by the previous process do not un-mark the new one's events": async (t) => {
+    // The pane keeps the previous process's rows after the restart tell —
+    // they did happen — but the prune reads a dropped row's id back into
+    // renderedEvents, and after the tell those numbers belong to the NEW
+    // process. Measured on the lab: process A at 82 events, restart, B's 18
+    // fetched, B's next 6 arrive → B's ids 1..6 no longer in the Set while
+    // their rows are on the pane. A second delivery of one of them — the
+    // catch-up/socket overlap the Set exists for — was then drawn twice.
+    const evs = (n, hour) => Array.from({ length: n }, (_, i) => ({
+      id: i + 1, kind: "route", change: "added", node: "leaf1", prefix: `10.${i}.0.0/16`, to: "x",
+      ts: `2026-09-21T${hour}:00:${String(i % 60).padStart(2, "0")}.000Z` }));
+    let ring = evs(90, "10"), epoch = "A";
+    t.ctx.fetch = (url) => {
+      const since = Number(new URL(String(url), "http://x").searchParams.get("since") || 0);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ready: true, epoch, lastId: ring.length, events: ring.filter((e) => e.id > since) }) });
+    };
+    await t.catchUp();
+    eq(t.eventsEl.children.length, 90, "process A's history");
+    ring = evs(18, "11"); epoch = "B";
+    await t.catchUp();                                  // the tell fires; B's 18 are drawn; 8 of A's rows are pruned
+    eq(t.eventsEl.children.length, 100, "the pane is at its cap");
+    t.addEvent({ ...ring[0] });                         // B's event 1 delivered again (socket after catch-up)
+    const drawnAs1 = t.eventsEl.children.filter((li) => li.dataset.eventId === "1").length;
+    eq(drawnAs1, 1, "B's event 1 is drawn once");
+  },
+
+  "a sweep armed before a poller restart still removes the edge after it": (t) => {
+    // The restart tell resets the events' numbering; the sweep is graph
+    // state and must neither be lost nor fire against the wrong data. The
+    // reconnect delivers a snapshot whose `data` may be {} (the new poller
+    // has not polled yet), then the new poller's first state frame.
+    t.setNodes(twoRouters);
+    const cy = fakeCy([
+      { id: "leaf1" }, { id: "spine" },
+      { id: "leaf1--spine", source: "leaf1", target: "spine", state: "Established" },
+    ]);
+    t.setCy(cy);
+    const realNow = Date.now;
+    try {
+      let now = 7_000_000;
+      Date.now = () => now;
+      t.setState({ leaf1: { summary: { ipv4Unicast: { peers: {} } } }, spine: { summary: { ipv4Unicast: { peers: {} } } } });
+      t.updateGraph();                                   // marked; sweep armed
+      eq(t.timers.length, 1, "armed");
+      now += 10_000;
+      t.setState({}); t.updateGraph();                   // the reconnect's snapshot: nobody has answered yet
+      eq(cy.store.get("leaf1--spine").state, "vanished", "still marked, not removed on unread routers");
+      now += 3_000;
+      t.setState({ leaf1: { summary: { ipv4Unicast: { peers: {} } } }, spine: { summary: { ipv4Unicast: { peers: {} } } } });
+      t.updateGraph();                                   // the new poller's first state frame
+      eq(t.timers.length, 1, "one sweep, still the original");
+      now += t.VANISHED_GRACE_MS + 250 - 13_000;
+      eq(t.runTimers(), 1, "it fires");
+      if (cy.store.has("leaf1--spine")) throw new Error("the edge marked before the restart was not swept");
+      eq(t.timers.length, 0, "nothing left armed");
+    } finally {
+      Date.now = realNow;
+    }
   },
 
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {

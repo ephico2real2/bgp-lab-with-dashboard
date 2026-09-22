@@ -251,7 +251,7 @@ def test_the_endpoint_serves_the_same_ids_the_socket_sent(monkeypatch):
     import main
 
     p = LabPoller.__new__(LabPoller)
-    p.events, p.last_event_id = deque(maxlen=500), 0
+    p.events, p.last_event_id, p.epoch = deque(maxlen=500), 0, "epoch-a"
     for i in range(3):
         p.record_event({"kind": "session", "peer": f"10.0.0.{i}"})
     monkeypatch.setattr(main, "poller", p)
@@ -368,3 +368,63 @@ def test_the_poll_after_a_recovery_is_diffed_normally(poller):
     good = {"isp1": node({"10.0.10.1": peer("Established")})}
     down = {"isp1": node({"10.0.10.1": peer("Idle")})}
     assert kinds(poller._diff_events(good, down)) == [("session", "state")]
+
+
+# ---- what the page's restart tell reads ------------------------------------
+
+def test_last_id_is_the_highest_id_issued_not_the_ring_s_length(monkeypatch):
+    """The page compares lastId with the highest id it holds. A ring that has
+    dropped its oldest is shorter than the ids it issued: a lastId read as
+    len(ring) would sit at 500 while the page held 501, 502, … and every
+    reconnect would then read as a restart and redraw the whole ring."""
+    import asyncio
+    import main
+
+    p = LabPoller.__new__(LabPoller)
+    p.events, p.last_event_id, p.epoch = deque(maxlen=3), 0, "epoch-a"
+    for i in range(5):
+        p.record_event({"kind": "session", "n": i})
+    monkeypatch.setattr(main, "poller", p)
+    body = asyncio.run(main.events(since=4))
+    assert body["lastId"] == 5
+    assert [e["id"] for e in body["events"]] == [5]
+
+
+def test_the_endpoint_names_the_process_that_issued_the_ids(tmp_path, monkeypatch):
+    """Ids restart at 1 with the process. Measured on this lab, a fresh
+    poller's first poll issues 18 events, so a page holding 18 is told a
+    lastId that is not below its own and cannot see the restart by number.
+    Two pollers name themselves differently; one names itself the same way
+    on every call."""
+    import asyncio
+    import docker
+    import main
+
+    monkeypatch.setattr(docker, "from_env", lambda **kw: object())
+    topology = tmp_path / "topology.yml"
+    topology.write_text("topology:\n  nodes:\n    leaf1: {}\n")
+    first = LabPoller(topology_path=topology, lab_prefix="clab-x", broadcast=None)
+    second = LabPoller(topology_path=topology, lab_prefix="clab-x", broadcast=None)
+    assert isinstance(first.epoch, str) and first.epoch
+    assert first.epoch != second.epoch
+
+    monkeypatch.setattr(main, "poller", first)
+    a = asyncio.run(main.events(since=0))
+    b = asyncio.run(main.events(since=0))
+    assert a["epoch"] == b["epoch"] == first.epoch
+
+
+def test_api_state_carries_the_nodes_the_page_draws(monkeypatch):
+    """bootstrap() builds the graph from /api/state before the socket opens.
+    With no nodes there it builds an empty graph, and the snapshot that follows
+    adds every router through cy.add — without a layout, all at the origin."""
+    import asyncio
+    import main
+
+    p = LabPoller.__new__(LabPoller)
+    p.nodes = [{"name": "leaf1", "asn": 65101}, {"name": "spine", "asn": 65100}]
+    p.last_state = {}
+    monkeypatch.setattr(main, "poller", p)
+    body = asyncio.run(main.state())
+    assert body["ready"] is True
+    assert body["nodes"] == p.nodes
