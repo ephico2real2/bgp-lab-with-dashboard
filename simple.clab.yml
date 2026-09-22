@@ -37,8 +37,11 @@ topology:
       # escaping fix, the exec timeout, the signal frame, the Traffic view and
       # the event history, so a `clab deploy` against it shows none of them.
       # Pinned by the commit that produced it; `:develop` follows the branch.
-      # Digest sha256:c833cec68fac1afd97294ac52ae41f6e79a9e9090975cb42841f568be5cea387
-      image: quay.io/ephico2real/bgp-dashboard:sha-117b046
+      # Digest sha256:9d4aa0235271c9b3f68f8b88747862f91fc8b0def856b0a500a0d756554fcf6c
+      # The image carries that commit as org.opencontainers.image.revision, so
+      #   docker inspect <container> --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+      # answers which build is running without diffing files against a checkout.
+      image: quay.io/ephico2real/bgp-dashboard:sha-9a52441
       image-pull-policy: IfNotPresent   # use cached image after first pull
       ports:
         # Loopback only. `8088:8080` publishes on every interface the host has,
