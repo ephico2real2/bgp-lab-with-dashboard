@@ -251,7 +251,7 @@ def test_the_endpoint_serves_the_same_ids_the_socket_sent(monkeypatch):
     import main
 
     p = LabPoller.__new__(LabPoller)
-    p.events, p.last_event_id, p.epoch = deque(maxlen=500), 0, "1758448977.013-1"
+    p.events, p.last_event_id, p.epoch = deque(maxlen=500), 0, "epoch-a"
     for i in range(3):
         p.record_event({"kind": "session", "peer": f"10.0.0.{i}"})
     monkeypatch.setattr(main, "poller", p)
@@ -381,7 +381,7 @@ def test_last_id_is_the_highest_id_issued_not_the_ring_s_length(monkeypatch):
     import main
 
     p = LabPoller.__new__(LabPoller)
-    p.events, p.last_event_id, p.epoch = deque(maxlen=3), 0, "1758448977.013-1"
+    p.events, p.last_event_id, p.epoch = deque(maxlen=3), 0, "epoch-a"
     for i in range(5):
         p.record_event({"kind": "session", "n": i})
     monkeypatch.setattr(main, "poller", p)

@@ -669,11 +669,22 @@ async function catchUp(retry = true) {
     // high-water mark, on a page that still said "connected". A lastId BELOW
     // the id we hold cannot have come from the process that gave us that id —
     // that is the tell. Forget the numbering and ask again from nothing.
+    // `lastId < lastEventId` below is now the COMPATIBILITY path: it is all a
+    // page has against a server that predates `epoch` — one already open
+    // against the old build when this one is deployed. It can go one deploy
+    // after this, and until then it costs a comparison.
     const otherProcess = typeof body.epoch === "string" && pollerEpoch !== null && body.epoch !== pollerEpoch;
     if (typeof body.epoch === "string") pollerEpoch = body.epoch;
     if (otherProcess || (typeof body.lastId === "number" && body.lastId < lastEventId)) {
       renderedEvents.clear();
       lastEventId = 0;
+      // The rows already on the pane were numbered by the previous process
+      // and they stay (they did happen) — but the prune reads a dropped
+      // row's id back out of renderedEvents, and from here on that number
+      // belongs to the new process. Measured: process A at 82 events, a
+      // restart, then B's next 6 events pruned A's rows 1..6 and un-marked
+      // B's 1..6, so a second delivery of any of them was drawn twice.
+      for (const li of eventsEl.children) delete li.dataset.eventId;
       if (retry) return catchUp(false);
     }
     for (const ev of body.events || []) addEvent(ev);

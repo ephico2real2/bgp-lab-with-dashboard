@@ -501,7 +501,7 @@ const CASES = {
       id: i + 1, kind: "session", change: "appeared", node: "leaf1", peer: `10.9.${i}.1`,
       remoteAs: 65100, state: "Established", ts: `2026-09-21T${hour}:00:00.000Z` }));
     let ring = burst("10");
-    let epoch = "1758448977.013-1";
+    let epoch = "epoch-a";                              // opaque on purpose: the page compares, never parses
     const asked = [];
     t.ctx.fetch = (url) => {
       const since = Number(new URL(String(url), "http://x").searchParams.get("since") || 0);
@@ -512,10 +512,70 @@ const CASES = {
     await t.catchUp();
     eq(t.eventsEl.children.length, 18, "the first process's history is drawn");
     ring = burst("11");
-    epoch = "1758449100.500-1";                          // the poller restarted and re-read the fabric
+    epoch = "epoch-b";                                  // the poller restarted and re-read the fabric
     await t.catchUp();
     eq(asked, [0, 18, 0], "the new process is recognised and asked from nothing");
     eq(t.eventsEl.children.length, 36, "all 18 of the new process's events are drawn");
+  },
+
+  "rows numbered by the previous process do not un-mark the new one's events": async (t) => {
+    // The pane keeps the previous process's rows after the restart tell —
+    // they did happen — but the prune reads a dropped row's id back into
+    // renderedEvents, and after the tell those numbers belong to the NEW
+    // process. Measured on the lab: process A at 82 events, restart, B's 18
+    // fetched, B's next 6 arrive → B's ids 1..6 no longer in the Set while
+    // their rows are on the pane. A second delivery of one of them — the
+    // catch-up/socket overlap the Set exists for — was then drawn twice.
+    const evs = (n, hour) => Array.from({ length: n }, (_, i) => ({
+      id: i + 1, kind: "route", change: "added", node: "leaf1", prefix: `10.${i}.0.0/16`, to: "x",
+      ts: `2026-09-21T${hour}:00:${String(i % 60).padStart(2, "0")}.000Z` }));
+    let ring = evs(90, "10"), epoch = "A";
+    t.ctx.fetch = (url) => {
+      const since = Number(new URL(String(url), "http://x").searchParams.get("since") || 0);
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ready: true, epoch, lastId: ring.length, events: ring.filter((e) => e.id > since) }) });
+    };
+    await t.catchUp();
+    eq(t.eventsEl.children.length, 90, "process A's history");
+    ring = evs(18, "11"); epoch = "B";
+    await t.catchUp();                                  // the tell fires; B's 18 are drawn; 8 of A's rows are pruned
+    eq(t.eventsEl.children.length, 100, "the pane is at its cap");
+    t.addEvent({ ...ring[0] });                         // B's event 1 delivered again (socket after catch-up)
+    const drawnAs1 = t.eventsEl.children.filter((li) => li.dataset.eventId === "1").length;
+    eq(drawnAs1, 1, "B's event 1 is drawn once");
+  },
+
+  "a sweep armed before a poller restart still removes the edge after it": (t) => {
+    // The restart tell resets the events' numbering; the sweep is graph
+    // state and must neither be lost nor fire against the wrong data. The
+    // reconnect delivers a snapshot whose `data` may be {} (the new poller
+    // has not polled yet), then the new poller's first state frame.
+    t.setNodes(twoRouters);
+    const cy = fakeCy([
+      { id: "leaf1" }, { id: "spine" },
+      { id: "leaf1--spine", source: "leaf1", target: "spine", state: "Established" },
+    ]);
+    t.setCy(cy);
+    const realNow = Date.now;
+    try {
+      let now = 7_000_000;
+      Date.now = () => now;
+      t.setState({ leaf1: { summary: { ipv4Unicast: { peers: {} } } }, spine: { summary: { ipv4Unicast: { peers: {} } } } });
+      t.updateGraph();                                   // marked; sweep armed
+      eq(t.timers.length, 1, "armed");
+      now += 10_000;
+      t.setState({}); t.updateGraph();                   // the reconnect's snapshot: nobody has answered yet
+      eq(cy.store.get("leaf1--spine").state, "vanished", "still marked, not removed on unread routers");
+      now += 3_000;
+      t.setState({ leaf1: { summary: { ipv4Unicast: { peers: {} } } }, spine: { summary: { ipv4Unicast: { peers: {} } } } });
+      t.updateGraph();                                   // the new poller's first state frame
+      eq(t.timers.length, 1, "one sweep, still the original");
+      now += t.VANISHED_GRACE_MS + 250 - 13_000;
+      eq(t.runTimers(), 1, "it fires");
+      if (cy.store.has("leaf1--spine")) throw new Error("the edge marked before the restart was not swept");
+      eq(t.timers.length, 0, "nothing left armed");
+    } finally {
+      Date.now = realNow;
+    }
   },
 
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {
