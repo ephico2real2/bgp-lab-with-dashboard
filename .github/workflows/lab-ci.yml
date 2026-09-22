@@ -48,12 +48,23 @@ jobs:
           echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tag=sha-${SHORT}" >> "$GITHUB_OUTPUT"
+          # The commit is the one thing a Dockerfile cannot know about itself,
+          # and it is the one a reader needs: `docker inspect` on a running
+          # container should answer "which build is this?" without diffing its
+          # files against a checkout. Same labels on the cache pass and the
+          # loaded one, or the two builds are not the same image.
+          LABELS=(
+            --label "org.opencontainers.image.revision=${{ github.sha }}"
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          )
           docker buildx build --platform linux/amd64,linux/arm64 \
+            "${LABELS[@]}" \
             -t "${IMAGE}:sha-${SHORT}" \
             -t "${IMAGE}:develop" \
             --output type=cacheonly \
             dashboard/
           docker buildx build --load \
+            "${LABELS[@]}" \
             -t "${IMAGE}:sha-${SHORT}" \
             -t "${IMAGE}:develop" \
             -t bgp-lab-dashboard:local \
@@ -89,6 +100,8 @@ jobs:
           printf '%s' "${REGISTRY_PASSWORD}" \
             | docker login "${REGISTRY}" --username "${REGISTRY_USERNAME}" --password-stdin
           docker buildx build --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t "${IMAGE}:sha-${SHORT}" \
             -t "${IMAGE}:develop" \
             --push \

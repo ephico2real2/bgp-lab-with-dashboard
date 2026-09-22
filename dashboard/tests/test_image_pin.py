@@ -39,3 +39,37 @@ def test_the_digest_recorded_beside_the_pin_is_a_digest():
     text = (ROOT / "simple.clab.yml").read_text()
     assert re.search(r"# Digest sha256:[0-9a-f]{64}", text), (
         "the pin has no digest recorded beside it")
+
+
+WORKFLOW = (ROOT / ".github" / "workflows" / "lab-ci.yml").read_text()
+DOCKERFILE = (ROOT / "dashboard" / "Dockerfile").read_text()
+
+
+def test_every_image_ci_builds_is_labelled_with_its_commit():
+    """A Dockerfile cannot know the commit it is built from, so CI has to say.
+    Without it nothing on a running host can answer "which build is this?" —
+    measured on the published image before this: `.Config.Labels` was `null`,
+    and identifying a container meant diffing its served files against a
+    checkout byte for byte.
+
+    Both buildx invocations, not one: the cache pass and the loaded pass have
+    to produce the same image, and a label is part of the image.
+    """
+    builds = re.findall(r"docker buildx build(.*?)dashboard/", WORKFLOW, re.S)
+    assert len(builds) >= 3, f"expected the cache, load and push builds; found {len(builds)}"
+    for i, build in enumerate(builds):
+        assert "image.revision" in build or "LABELS[@]" in build, (
+            f"buildx invocation {i} carries no revision label")
+
+
+def test_the_image_says_what_it_is():
+    """Read only the lines that BUILD something. A comment mentioning a label
+    is not a label — measured: commenting the LABEL line out left every one of
+    these strings in the file and this test passed."""
+    live = "\n".join(line for line in DOCKERFILE.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#"))
+    assert re.search(r"^LABEL\b", live, re.M), "the Dockerfile sets no labels at all"
+    for label in ("org.opencontainers.image.title",
+                  "org.opencontainers.image.description",
+                  "org.opencontainers.image.source"):
+        assert label in live, f"the Dockerfile does not set {label}"
