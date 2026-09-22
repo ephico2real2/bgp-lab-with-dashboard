@@ -47,6 +47,25 @@ The two ISPs (AS65100, AS65200) don't originate any prefixes — they only trans
 
 Once the lab is up, `http://<host>:8088` serves a small web app that draws the topology, shows each router's BGP table on click, and streams session and best-path events as they happen — so you can *see* changes the moment they propagate. The GIF above is a `clear ip bgp *` issued on ISP1: edge colors flicker as sessions reset, then settle back to green as they re-establish, with the event log capturing every transition.
 
+The events pane records every session transition — including a peer that
+*vanishes* from a router's table — every prefix added or withdrawn, and every
+best-path change. Each event is stamped in RFC 3339 UTC with milliseconds and
+drawn on your own clock. The last 500 are kept, so a page that opens, or
+reloads, after something happened still shows it:
+
+```bash
+curl -s 'http://<host>:8088/api/events?since=0'
+```
+
+```json
+{"ts": "2026-09-21T22:52:31.222Z", "kind": "session", "change": "vanished",
+ "node": "isp1", "peer": "10.0.10.1", "remoteAs": 65001,
+ "was": "Established", "id": 20}
+```
+
+`since=<id>` returns only what follows that id, which is how the page catches
+up after a reconnect without drawing anything twice.
+
 ## Prerequisites (Linux)
 
 The lab runs on any modern Linux distro (tested on Ubuntu 22.04 / 24.04, Debian 12, x86_64). You need two things on the host: Docker and containerlab.

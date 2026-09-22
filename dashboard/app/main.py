@@ -15,6 +15,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 TOPOLOGY_PATH = Path(os.environ.get("LAB_TOPOLOGY", "/lab/topology.yml"))
 LAB_PREFIX = os.environ.get("LAB_PREFIX", "clab-simple-lab")
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "2"))
+# How many events are kept for a page that arrives late. 500 at this fabric's
+# event rate is hours of a quiet lab and still covers a full `clear ip bgp *`,
+# which produces a few dozen.
+EVENTS_RING = int(os.environ.get("EVENTS_RING", "500"))
 
 clients: set[WebSocket] = set()
 poller: LabPoller | None = None
@@ -42,6 +46,7 @@ async def lifespan(_: FastAPI):
         lab_prefix=LAB_PREFIX,
         broadcast=broadcast,
         interval=POLL_INTERVAL,
+        events_ring=EVENTS_RING,
     )
     task = asyncio.create_task(poller.run())
     try:
@@ -68,6 +73,24 @@ async def state():
     if poller is None:
         return {"ready": False}
     return {"ready": True, "data": poller.last_state, "nodes": poller.nodes}
+
+
+@app.get("/api/events")
+async def events(since: int = 0):
+    """What has happened, for a page that was not connected when it did.
+
+    `since` is the last id the caller already has, so a reconnecting page asks
+    only for the gap. It is served from the same ring the socket broadcasts
+    from, with the same ids, so an event delivered twice is recognisable as
+    one event rather than rendered twice.
+    """
+    if poller is None:
+        return {"ready": False, "events": [], "lastId": 0}
+    return {
+        "ready": True,
+        "events": poller.events_since(since),
+        "lastId": poller.last_event_id,
+    }
 
 
 @app.websocket("/ws")
