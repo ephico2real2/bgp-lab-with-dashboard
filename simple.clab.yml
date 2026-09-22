@@ -33,7 +33,12 @@ topology:
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     dashboard:
       kind: linux
-      image: vadaszgergo/bgp-dashboard:0.1.0
+      # This fork's own build, not upstream's 0.1.0 — that tag predates the
+      # escaping fix, the exec timeout, the signal frame, the Traffic view and
+      # the event history, so a `clab deploy` against it shows none of them.
+      # Pinned by the commit that produced it; `:develop` follows the branch.
+      # Digest sha256:c833cec68fac1afd97294ac52ae41f6e79a9e9090975cb42841f568be5cea387
+      image: quay.io/ephico2real/bgp-dashboard:sha-117b046
       image-pull-policy: IfNotPresent   # use cached image after first pull
       ports:
         # Loopback only. `8088:8080` publishes on every interface the host has,

@@ -118,7 +118,17 @@ clab version                               # clab binary works
 
 ## Lifecycle
 
-The dashboard image is published on Docker Hub as `vadaszgergo/bgp-dashboard:0.1.0`, so the first `clab deploy` pulls it automatically. **No local build step is required.**
+The dashboard image is published by this fork's CI as
+`quay.io/ephico2real/bgp-dashboard:sha-117b046` (multi-arch: `linux/amd64` and
+`linux/arm64`), so the first `clab deploy` pulls it automatically. **No local
+build step is required.**
+
+`simple.clab.yml` pins the tag built from a known commit; `:develop` follows
+the branch if you would rather track it. Upstream's `vadaszgergo/bgp-dashboard:0.1.0`
+still works and is what the original lab used, but it predates the fixes in
+this fork — among them the escaping of router data, the `docker exec` timeout,
+the per-tick signal frame the Traffic view reads, and the event history behind
+`/api/events`.
 
 ```bash
 sudo clab deploy -t simple.clab.yml
@@ -148,7 +158,10 @@ Then edit `simple.clab.yml` and change the image line for the `dashboard` node:
 image: bgp-dashboard:dev
 ```
 
-Redeploy and your changes are picked up. Once you're happy, you can rebuild the published image (`vadaszgergo/bgp-dashboard:0.x.y`) and revert the YAML to use the registry version.
+Redeploy and your changes are picked up. Once you're happy, a push to
+`develop` builds and publishes `quay.io/ephico2real/bgp-dashboard:sha-<commit>`
+and `:develop` from CI — revert the YAML to the registry version and bump the
+pin to the tag that run printed.
 
 ## Exercises
 
