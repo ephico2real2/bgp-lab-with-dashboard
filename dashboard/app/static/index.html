@@ -39,6 +39,8 @@
           <li><i class="swatch" data-role="edge"></i> a company — the node's name does NOT match <code>/isp/i</code></li>
           <li><i class="swatch" data-role="isp"></i> transit — the name DOES match <code>/isp/i</code>. The role is
               guessed from the name, not read from BGP, so a router named otherwise is drawn as a company</li>
+          <li><i class="swatch" data-role="external"></i> a peer that answered but is NOT in the topology file — drawn
+              dashed, named by the hostname it advertised or by its address</li>
           <li><i class="swatch swatch-outline" aria-hidden="true"></i> selected — drag one to move them all</li>
           <li><i class="swatch swatch-none" aria-hidden="true"></i> an address with a second line is that END's own
               state, shown only when the two ends disagree</li>
