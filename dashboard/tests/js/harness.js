@@ -686,6 +686,127 @@ const CASES = {
     eq(calls, ["resize", "fit:30"], "the canvas is re-read and the nodes brought back into view");
   },
 
+  "two routers in one AS are two nodes, not one": (t) => {
+    // The graph keyed peers by AS, so an iBGP pair — or any lab with two
+    // routers in the same AS — collapsed into a single node and one of the two
+    // sessions vanished with it. BGP's own identity for a router is its
+    // router-id, and that is unique per router.
+    t.setNodes([{ name: "r1", asn: 65001 }, { name: "r2", asn: 65001 }, { name: "spine", asn: 65100 }]);
+    const summary = (routerId, asn, peers) => ({ summary: { ipv4Unicast: { routerId, as: asn, peers } } });
+    t.setState({
+      r1: { ...summary("10.255.0.1", 65001, { "10.0.0.9": { remoteAs: 65100, state: "Established" } }),
+            neighbors: { "10.0.0.9": { remoteRouterId: "10.255.9.9" } } },
+      r2: { ...summary("10.255.0.2", 65001, { "10.0.0.9": { remoteAs: 65100, state: "Established" } }),
+            neighbors: { "10.0.0.9": { remoteRouterId: "10.255.9.9" } } },
+      spine: { ...summary("10.255.9.9", 65100, {
+                 "10.0.0.1": { remoteAs: 65001, state: "Established" },
+                 "10.0.0.2": { remoteAs: 65001, state: "Established" } }),
+               neighbors: { "10.0.0.1": { remoteRouterId: "10.255.0.1" },
+                            "10.0.0.2": { remoteRouterId: "10.255.0.2" } } },
+    });
+    const els = t.buildElements();
+    const edges = els.filter((e) => e.data.source).map((e) => e.data.id).sort();
+    eq(edges, ["r1--spine", "r2--spine"], "both sessions are on the graph");
+    const nodes = els.filter((e) => !e.data.source).map((e) => e.data.id).sort();
+    eq(nodes, ["r1", "r2", "spine"], "and neither router was absorbed into the other");
+
+    // Both edges EXIST either way, because each leaf reports its own session —
+    // so counting them proves nothing. What the collapse actually corrupts is
+    // WHICH end each address belongs to: keyed by AS, the spine's two peers
+    // both resolve to r1, and r2's address lands on r1's edge.
+    const byId = Object.fromEntries(els.filter((e) => e.data.source).map((e) => [e.data.id, e.data]));
+    eq(byId["r1--spine"].sourceLabel, "10.0.0.1", "r1's end carries r1's address");
+    eq(byId["r2--spine"].sourceLabel, "10.0.0.2", "r2's end carries r2's own, not r1's");
+    eq(byId["r1--spine"].targetLabel, "10.0.0.9", "and the spine's end its own");
+  },
+
+  "an iBGP pair is an edge between them, never a loop on one of them": (t) => {
+    // Two routers in one AS peering with EACH OTHER is where keying by AS
+    // stops being merely ambiguous and becomes wrong: `asToNode.get(65001)`
+    // answers with the node doing the asking, so the session is drawn as a
+    // loop from a router to itself.
+    t.setNodes([{ name: "r1", asn: 65001 }, { name: "r2", asn: 65001 }]);
+    t.setState({
+      r1: { summary: { ipv4Unicast: { routerId: "10.255.0.1", as: 65001, peers: {
+              "10.0.0.2": { remoteAs: 65001, state: "Established" } } } },
+            neighbors: { "10.0.0.2": { remoteRouterId: "10.255.0.2" } } },
+      r2: { summary: { ipv4Unicast: { routerId: "10.255.0.2", as: 65001, peers: {
+              "10.0.0.1": { remoteAs: 65001, state: "Established" } } } },
+            neighbors: { "10.0.0.1": { remoteRouterId: "10.255.0.1" } } },
+    });
+    const edges = t.buildElements().filter((e) => e.data.source);
+    eq(edges.map((e) => e.data.id), ["r1--r2"], "one edge between the two");
+    for (const e of edges) {
+      if (e.data.source === e.data.target) throw new Error(`a router peering with itself: ${e.data.id}`);
+    }
+
+    // and with no neighbours view to resolve by — that call is non-fatal —
+    // the AS fallback would point each router at itself; it must draw nothing
+    // rather than a loop
+    t.setState({
+      r1: { summary: { ipv4Unicast: { routerId: "10.255.0.1", as: 65001, peers: {
+              "10.0.0.2": { remoteAs: 65001, state: "Established" } } } } },
+      r2: { summary: { ipv4Unicast: { routerId: "10.255.0.2", as: 65001, peers: {
+              "10.0.0.1": { remoteAs: 65001, state: "Established" } } } } },
+    });
+    for (const e of t.buildElements().filter((x) => x.data.source)) {
+      if (e.data.source === e.data.target) throw new Error(`a loop from the AS fallback: ${e.data.id}`);
+    }
+  },
+
+  "a peer outside the topology file is drawn, not dropped": (t) => {
+    // `asToNode.get(remoteAs)` returned nothing for a peer the file does not
+    // describe, and the loop moved on — the session was simply missing from
+    // the picture, with nothing to say anything had been hidden.
+    t.setNodes([{ name: "leaf1", asn: 65101 }]);
+    t.setState({
+      leaf1: {
+        summary: { ipv4Unicast: { routerId: "10.255.1.1", as: 65101, peers: {
+          "10.9.9.9": { remoteAs: 64512, state: "Established" } } } },
+        neighbors: { "10.9.9.9": { remoteRouterId: "10.255.9.1", hostname: "route-server" } },
+      },
+    });
+    const els = t.buildElements();
+    const ext = els.find((e) => e.data.role === "external");
+    if (!ext) throw new Error("the outside peer is still invisible");
+    eq(ext.data.id, "route-server", "named by the hostname it advertised");
+    eq(ext.data.label, "route-server\nAS64512", "and by the AS it claimed");
+    const edge = els.find((e) => e.data.source);
+    if (!edge) throw new Error("no edge to the outside peer");
+    eq([edge.data.source, edge.data.target].sort(), ["leaf1", "route-server"], "the session is drawn");
+  },
+
+  "a peer that advertises no hostname is named by its address": (t) => {
+    t.setNodes([{ name: "leaf1", asn: 65101 }]);
+    t.setState({
+      leaf1: {
+        summary: { ipv4Unicast: { routerId: "10.255.1.1", as: 65101, peers: {
+          "10.9.9.9": { remoteAs: 64512, state: "Active" } } } },
+        neighbors: {},
+      },
+    });
+    const ext = t.buildElements().find((e) => e.data.role === "external");
+    if (!ext) throw new Error("the outside peer is invisible");
+    eq(ext.data.id, "AS64512 10.9.9.9", "the address is the fallback name");
+  },
+
+  "the AS on a node is the one the router reports, not the one the file guessed": (t) => {
+    // configs/<node>/frr.conf said what the lab was WRITTEN to be. A router
+    // whose running config differs — someone typed `router bgp` at a vtysh —
+    // was still labelled with the file's number.
+    t.setNodes([{ name: "leaf1", asn: 65101 }]);
+    t.setState({ leaf1: { summary: { ipv4Unicast: { routerId: "10.255.1.1", as: 65999, peers: {} } } } });
+    const node = t.buildElements().find((e) => e.data.id === "leaf1");
+    eq(node.data.label, "leaf1\nAS65999", "the measured AS wins");
+    eq(node.data.routerId, "10.255.1.1", "and the router-id is carried");
+
+    // before the first poll answers there is nothing measured, and the
+    // config-derived number is all there is
+    t.setState({});
+    eq(t.buildElements().find((e) => e.data.id === "leaf1").data.label, "leaf1\nAS65101",
+       "the file's number is the fallback, not the source");
+  },
+
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {
     const c = t.eventClock("2026-09-21T10:00:00.250Z");
     if (!/^\d{2}:\d{2}:\d{2}\.\d{3}$/.test(c.text)) throw new Error(`text: ${c.text}`);

@@ -51,23 +51,61 @@ class LabPoller:
         self.epoch = uuid.uuid4().hex
 
     def _load_nodes(self) -> list[dict[str, Any]]:
-        topology = yaml.safe_load(self.topology_path.read_text())
-        node_names = list(topology["topology"]["nodes"].keys())
-        result = []
-        for name in node_names:
-            if name == "dashboard":
-                continue
-            asn = self._guess_asn(name)
-            result.append({"name": name, "asn": asn})
-        return result
+        """The routers to poll: what is RUNNING, ordered by the topology file.
 
-    def _guess_asn(self, node_name: str) -> int | None:
-        # Look in configs/<node>/frr.conf relative to topology
-        candidate = self.topology_path.parent / "configs" / node_name / "frr.conf"
-        if not candidate.exists():
-            return None
-        match = re.search(r"^\s*router bgp (\d+)", candidate.read_text(), re.MULTILINE)
-        return int(match.group(1)) if match else None
+        Two sources, each used for what it actually knows. Docker knows which
+        containers exist right now, so a node added or removed after start-up
+        no longer needs a dashboard restart. The topology file, when there is
+        one, knows the order a reader expects to see them in — and nothing
+        else: the ASN is read from the router itself on every poll now, not
+        regex-parsed out of `configs/<node>/frr.conf`, where a `router bgp` in
+        a VRF block or under different indentation was parsed as the router's
+        own AS.
+        """
+        running = self._running_nodes()
+        ordered = [n for n in self._topology_order() if n in running]
+        ordered += sorted(running - set(ordered))
+        # A lab whose containers are not up yet still draws its topology: fall
+        # back to the file so the graph exists before the first one answers.
+        if not ordered:
+            ordered = self._topology_order()
+        # Carry what each router has already told us about itself. This runs
+        # every tick, and rebuilding the entries from scratch would blank the
+        # measured AS and router-id on every poll — harmless for a router that
+        # answers (the poll fills them straight back in) and wrong for one
+        # that does not: its label would fall back to "?" the moment it went
+        # unreachable, when the last thing it said is the honest thing to show.
+        known = {n["name"]: n for n in getattr(self, "nodes", [])}
+        return [known.get(name) or {"name": name, "asn": None} for name in ordered]
+
+    def _running_nodes(self) -> set[str]:
+        """Container names under this lab's prefix, minus the dashboard."""
+        try:
+            containers = self.client.containers.list(
+                filters={"name": f"^/?{re.escape(self.lab_prefix)}-"})
+        except Exception as exc:                       # docker unreachable
+            print(f"[poller] container discovery failed: {exc}")
+            return set()
+        out = set()
+        for c in containers:
+            name = (c.name or "").removeprefix(f"{self.lab_prefix}-")
+            if name and name != "dashboard":
+                out.add(name)
+        return out
+
+    def _topology_order(self) -> list[str]:
+        """The node order from the clab YAML, or nothing when there is no file.
+
+        The file is OPTIONAL now. It is a presentation preference — which
+        router a reader sees first — not the inventory.
+        """
+        try:
+            topology = yaml.safe_load(self.topology_path.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            print(f"[poller] no topology file ({exc}); ordering by name")
+            return []
+        nodes = ((topology or {}).get("topology") or {}).get("nodes") or {}
+        return [n for n in nodes if n != "dashboard"]
 
     async def run(self) -> None:
         while True:
@@ -78,6 +116,13 @@ class LabPoller:
             await asyncio.sleep(self.interval)
 
     async def poll_all(self) -> None:
+        # Re-read the inventory each tick. It is one Docker API call, and
+        # without it a router added to the lab stayed invisible until someone
+        # restarted the dashboard — which the README used to state as a
+        # limitation rather than fix.
+        nodes = await asyncio.to_thread(self._load_nodes)
+        if nodes and nodes != self.nodes:
+            self.nodes = nodes
         results = await asyncio.gather(
             *[asyncio.to_thread(self._poll_node_sync, n) for n in self.nodes],
             return_exceptions=True,
@@ -88,6 +133,19 @@ class LabPoller:
                 state[node["name"]] = {"error": repr(result)}
             else:
                 state[node["name"]] = result
+
+        # What each router said about ITSELF this poll. `/api/state` publishes
+        # the node list, and a consumer of it — the page before its first
+        # frame, ci/check.sh, anything else — should get the AS the router is
+        # running, not a number parsed out of a file it was written from. The
+        # router-id comes with it: it is the identity BGP uses, and the only
+        # one that is unique per router.
+        for node in self.nodes:
+            ipv4 = ((state.get(node["name"]) or {}).get("summary") or {}).get("ipv4Unicast") or {}
+            if ipv4.get("as") is not None:
+                node["asn"] = ipv4["as"]
+            if ipv4.get("routerId"):
+                node["routerId"] = ipv4["routerId"]
 
         # Compare what the page RENDERS, not the raw poll. The summary carries
         # FRR's per-peer counters, and peerUptime advances with the clock, so

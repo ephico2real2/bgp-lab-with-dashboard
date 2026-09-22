@@ -67,6 +67,9 @@ function stateColor(state) {
 const ROLE_COLORS = {
   edge: { bg: "#d6f0d3", border: "#2c9d3c" },   // companies (heuristic)
   isp:  { bg: "#cfe6fd", border: "#2c79d9" },
+  // A peer that answered but is not in the topology file: real, and not ours
+  // to describe. Grey, because we know nothing about it beyond what it said.
+  external: { bg: "#f3f4f6", border: "#8b8b8b" },
 };
 
 function setStatus(text, cls) {
@@ -114,23 +117,60 @@ function nodeRole(name) {
   return /isp/i.test(name) ? "isp" : "edge";
 }
 
+// What each router says about ITSELF, read from BGP rather than guessed.
+// `show ip bgp summary json` carries the router-id and the local AS; the
+// topology file and a regex over configs/ only ever said what the lab was
+// WRITTEN to be, which is a different claim from what it is running.
+function identities() {
+  const out = new Map();                       // node name -> { routerId, asn }
+  for (const n of nodes) {
+    const ipv4 = ((lastState[n.name] || {}).summary || {}).ipv4Unicast || {};
+    out.set(n.name, {
+      routerId: ipv4.routerId || "",
+      // the measured AS, with the config-derived one as the fallback that
+      // labels the graph before the first poll answers
+      asn: ipv4.as ?? n.asn ?? null,
+    });
+  }
+  return out;
+}
+
+// Router-id -> node name. The router-id is the identity BGP itself uses, and
+// unlike the AS it is unique per router: keying the graph by AS collapsed two
+// routers in one AS into a single node, and made every peer whose AS was not
+// in the topology file invisible.
+function byRouterId(ids) {
+  const out = new Map();
+  for (const [name, id] of ids) if (id.routerId) out.set(id.routerId, name);
+  return out;
+}
+
 function buildElements() {
   const els = [];
+  const ids = identities();
+  const routerIdToNode = byRouterId(ids);
+  const external = new Map();                  // router-id (or address) -> node data
+
   // nodes
   for (const n of nodes) {
     const role = nodeRole(n.name);
+    const id = ids.get(n.name) || {};
     els.push({
       data: {
         id: n.name,
-        label: `${n.name}\nAS${n.asn ?? "?"}`,
+        label: `${n.name}\nAS${id.asn ?? "?"}`,
         role,
+        routerId: id.routerId || "",
       },
     });
   }
 
-  // Build AS -> node lookup
+  // Build AS -> node lookup. This is the FALLBACK, for a router that answered
+  // its summary but not `show bgp neighbors` (that call is non-fatal), and it
+  // carries the ambiguity this whole change is about: it can only ever return
+  // one node per AS.
   const asToNode = new Map();
-  for (const n of nodes) if (n.asn) asToNode.set(n.asn, n.name);
+  for (const [name, id] of ids) if (id.asn && !asToNode.has(id.asn)) asToNode.set(id.asn, name);
 
   // For each BGP session we walk both sides so we can label each end of the
   // edge with the IP that belongs to that side. When node N reports peer IP X,
@@ -139,9 +179,28 @@ function buildElements() {
 
   for (const n of nodes) {
     const peers = ((lastState[n.name] || {}).summary || {}).ipv4Unicast?.peers || {};
+    const neighbours = (lastState[n.name] || {}).neighbors || {};
     for (const [peerIp, info] of Object.entries(peers)) {
-      const remote = asToNode.get(info.remoteAs);
-      if (!remote) continue;
+      // Who is on the other end, asked in the order of how much the answer is
+      // worth: the peer's own router-id (BGP's identity for it), then the AS
+      // (ambiguous), and if neither names a router we know, the peer is real
+      // and simply outside this topology file — draw it rather than drop it.
+      const nbr = neighbours[peerIp] || {};
+      let remote = nbr.remoteRouterId ? routerIdToNode.get(nbr.remoteRouterId) : undefined;
+      if (!remote) remote = asToNode.get(info.remoteAs);
+      if (!remote) {
+        const key = nbr.remoteRouterId || peerIp;
+        remote = nbr.hostname || `AS${info.remoteAs ?? "?"} ${peerIp}`;
+        if (!external.has(key)) {
+          external.set(key, {
+            id: remote,
+            label: `${remote}\nAS${info.remoteAs ?? "?"}`,
+            role: "external",
+            routerId: nbr.remoteRouterId || "",
+          });
+        }
+      }
+      if (remote === n.name) continue;          // a router cannot peer with itself
       const [a, b] = [n.name, remote].sort();
       const key = `${a}--${b}`;
       let edge = edges.get(key);
@@ -172,6 +231,12 @@ function buildElements() {
       if (info.state) edge.state = worseState(edge.state, info.state);
     }
   }
+
+  // A peer that is not in the topology file is still a peer. It used to be
+  // dropped silently — `asToNode.get()` returned nothing and the loop moved
+  // on — so a session the lab really had was missing from the picture with no
+  // indication anything was hidden.
+  for (const node of external.values()) els.push({ data: node });
 
   for (const e of edges.values()) {
     // When the two ends disagree, each end's label names its own state: the
@@ -252,6 +317,16 @@ function buildGraph() {
         style: {
           "background-color": ROLE_COLORS.edge.bg,
           "border-color": ROLE_COLORS.edge.border,
+        },
+      },
+      {
+        // Dashed, because the topology file does not know this node exists.
+        selector: "node[role = 'external']",
+        style: {
+          "background-color": ROLE_COLORS.external.bg,
+          "border-color": ROLE_COLORS.external.border,
+          "border-style": "dashed",
+          "shape": "ellipse",
         },
       },
       {

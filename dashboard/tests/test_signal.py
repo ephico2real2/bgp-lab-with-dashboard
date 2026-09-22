@@ -135,7 +135,7 @@ def test_every_raw_counter_is_carried_through(field):
     assert s[field] == 42
 
 
-def test_the_signal_is_broadcast_on_a_tick_that_changes_nothing():
+def test_the_signal_is_broadcast_on_a_tick_that_changes_nothing(bare_poller):
     """The regression this frame exists to prevent.
 
     A full state frame goes out only when the signature changes — the graph or
@@ -150,15 +150,7 @@ def test_the_signal_is_broadcast_on_a_tick_that_changes_nothing():
     async def broadcast(message):
         sent.append(message)
 
-    poller = LabPoller.__new__(LabPoller)          # no docker client wanted here
-    poller.broadcast = broadcast
-    poller.nodes = [{"name": "leaf1", "asn": 65101}]
-    poller.last_state = {}
-    poller.last_signature = None
-    # __init__ is skipped above, so the event ring has to be built by hand:
-    # poll_all records every event it broadcasts.
-    poller.events = deque(maxlen=500)
-    poller.last_event_id = 0
+    poller = bare_poller(broadcast=broadcast, nodes=[{"name": "leaf1", "asn": 65101}])
 
     async def drive(states):
         for st in states:
@@ -191,7 +183,7 @@ def test_a_quiet_tick_is_a_measured_zero_not_unmeasured():
     assert (s["dRcvd"], s["dSent"], s["dPfxRcd"], s["dPfxSnt"]) == (0, 0, 0, 0)
 
 
-def test_the_delta_is_per_tick_even_when_the_signature_did_not_change():
+def test_the_delta_is_per_tick_even_when_the_signature_did_not_change(bare_poller):
     """poll_all short-circuits when the signature is unchanged, and that path
     has to advance last_state too: the signal is subtracted from the PREVIOUS
     tick, not from the last tick that changed the topology. Otherwise a quiet
@@ -203,11 +195,7 @@ def test_the_delta_is_per_tick_even_when_the_signature_did_not_change():
     async def broadcast(message):
         sent.append(message)
 
-    p = LabPoller.__new__(LabPoller)
-    p.broadcast = broadcast
-    p.nodes = [{"name": "leaf1", "asn": 65101}]
-    p.last_state, p.last_signature = {}, None
-    p.events, p.last_event_id = deque(maxlen=500), 0
+    p = bare_poller(broadcast=broadcast, nodes=[{"name": "leaf1", "asn": 65101}])
     ticks = [node(summary_with(msgRcvd=100, msgSent=100)),
              node(summary_with(msgRcvd=104, msgSent=103)),
              node(summary_with(msgRcvd=108, msgSent=106))]

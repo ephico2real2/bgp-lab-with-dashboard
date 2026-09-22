@@ -193,7 +193,7 @@ def test_the_ring_drops_the_oldest_and_keeps_the_ids_honest():
     assert [e["id"] for e in p.events_since(1)] == [3, 4, 5]
 
 
-def test_broadcast_events_carry_their_id():
+def test_broadcast_events_carry_their_id(bare_poller):
     """What the socket delivers and what /api/events returns are the same
     objects with the same ids — that is what lets a page de-duplicate."""
     import asyncio
@@ -203,11 +203,7 @@ def test_broadcast_events_carry_their_id():
     async def broadcast(message):
         sent.append(message)
 
-    p = LabPoller.__new__(LabPoller)
-    p.broadcast = broadcast
-    p.nodes = [{"name": "leaf1", "asn": 65101}]
-    p.last_state, p.last_signature = {}, None
-    p.events, p.last_event_id = deque(maxlen=500), 0
+    p = bare_poller(broadcast=broadcast, nodes=[{"name": "leaf1", "asn": 65101}])
 
     states = [node({"10.0.0.1": peer()}), node({})]
 
@@ -428,3 +424,183 @@ def test_api_state_carries_the_nodes_the_page_draws(monkeypatch):
     body = asyncio.run(main.state())
     assert body["ready"] is True
     assert body["nodes"] == p.nodes
+
+
+# ---- the inventory: what is running, ordered by the file -------------------
+
+class FakeContainer:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_the_inventory_is_what_is_running_not_what_the_file_says(bare_poller, tmp_path):
+    """A node added after start-up used to stay invisible until someone
+    restarted the dashboard — the README stated it as a limitation."""
+    topology = tmp_path / "topology.yml"
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n    companya: {}\n    dashboard: {}\n")
+    p = bare_poller(topology_path=topology)
+
+    class Client:
+        names = ["clab-test-isp1", "clab-test-companya", "clab-test-dashboard"]
+
+        class containers:
+            @staticmethod
+            def list(filters=None):
+                return [FakeContainer(n) for n in Client.names]
+
+    p.client = Client
+    assert [n["name"] for n in p._load_nodes()] == ["isp1", "companya"], "file order, dashboard dropped"
+
+    # a router joins the lab
+    Client.names.append("clab-test-leaf9")
+    assert [n["name"] for n in p._load_nodes()] == ["isp1", "companya", "leaf9"], (
+        "a container the file never mentioned is still a router to poll")
+
+    # and leaves again
+    Client.names.remove("clab-test-isp1")
+    assert [n["name"] for n in p._load_nodes()] == ["companya", "leaf9"]
+
+
+def test_the_topology_file_is_optional(bare_poller, tmp_path):
+    """It is a presentation preference — which router a reader sees first —
+    not the inventory."""
+    p = bare_poller(topology_path=tmp_path / "nothing-here.yml")
+
+    class Client:
+        class containers:
+            @staticmethod
+            def list(filters=None):
+                return [FakeContainer("clab-test-zebra"), FakeContainer("clab-test-alpha")]
+
+    p.client = Client
+    assert [n["name"] for n in p._load_nodes()] == ["alpha", "zebra"], "no file: ordered by name"
+
+
+def test_a_lab_that_is_not_up_yet_still_draws_its_topology(bare_poller, tmp_path):
+    """Discovery answers nothing before the containers start. The file is what
+    is left, and a graph with no data beats no graph at all."""
+    topology = tmp_path / "topology.yml"
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n    dashboard: {}\n")
+    p = bare_poller(topology_path=topology)          # client is None → discovery fails
+    assert [n["name"] for n in p._load_nodes()] == ["isp1"]
+
+
+def test_the_asn_is_no_longer_guessed_from_a_config_file():
+    """`^\\s*router bgp (\\d+)` matched the first such line in the file — a
+    `router bgp` inside a VRF block, or under different indentation, was read
+    as the router's own AS. The number comes from the router now.
+
+    Asked of the SYNTAX TREE, not the text: a first version of this searched
+    the source for "router bgp" and failed on the comment that explains why
+    the regex was removed. A comment about a thing is not the thing.
+    """
+    import ast
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "poller.py").read_text()
+    tree = ast.parse(src)
+    assert "_guess_asn" not in {n.name for n in ast.walk(tree)
+                                if isinstance(n, ast.FunctionDef)}, "the guesser is back"
+
+    patterns = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name) and fn.value.id == "re":
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    patterns.append(arg.value)
+    assert not any("bgp" in p.lower() for p in patterns), (
+        f"the poller regex-parses router config again: {patterns}")
+
+
+def test_a_router_that_joins_mid_run_is_polled_without_a_restart(bare_poller, tmp_path):
+    """`_load_nodes` answering correctly is not the same as anything CALLING
+    it again. Measured: removing the re-read from poll_all left every
+    discovery test passing while the dashboard went back to needing a restart.
+    """
+    import asyncio
+
+    topology = tmp_path / "topology.yml"
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n")
+
+    class Client:
+        names = ["clab-test-isp1"]
+
+        class containers:
+            @staticmethod
+            def list(filters=None):
+                return [FakeContainer(n) for n in Client.names]
+
+    sent: list[dict] = []
+
+    async def broadcast(message):
+        sent.append(message)
+
+    p = bare_poller(broadcast=broadcast, topology_path=topology, client=Client,
+                    nodes=[{"name": "isp1", "asn": None}])
+    p._poll_node_sync = lambda n: node({"10.0.0.1": peer()})      # noqa: ARG005
+
+    asyncio.run(LabPoller.poll_all(p))
+    assert [n["name"] for n in p.nodes] == ["isp1"]
+
+    Client.names.append("clab-test-leaf9")
+    asyncio.run(LabPoller.poll_all(p))
+    assert [n["name"] for n in p.nodes] == ["isp1", "leaf9"], (
+        "the new router is not being polled — the inventory was read once at start-up")
+    assert "leaf9" in (sent[-1]["data"] if sent else {}) or any(
+        "leaf9" in (m.get("data") or {}) for m in sent), "and its state never reached the page"
+
+
+def test_the_node_list_carries_what_each_router_reported(bare_poller, tmp_path):
+    """`/api/state` publishes this list. Dropping the config regex without
+    filling the number back in from the poll left every node reading
+    `asn: None` — measured by ci/check.sh against the live lab:
+    `asns=None,None,None,None` where it expected `65001,65100,65200,65002`."""
+    import asyncio
+
+    topology = tmp_path / "topology.yml"
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n")
+
+    class Client:
+        class containers:
+            @staticmethod
+            def list(filters=None):
+                return [FakeContainer("clab-test-isp1")]
+
+    async def broadcast(message):
+        pass
+
+    p = bare_poller(broadcast=broadcast, topology_path=topology, client=Client,
+                    nodes=[{"name": "isp1", "asn": None}])
+    p._poll_node_sync = lambda n: {                                   # noqa: ARG005
+        "summary": {"ipv4Unicast": {"routerId": "10.255.1.1", "as": 65100, "peers": {}}},
+        "bgp": {"routes": {}}, "neighbors": {}}
+
+    asyncio.run(LabPoller.poll_all(p))
+    assert p.nodes[0]["asn"] == 65100, "the AS the router reported"
+    assert p.nodes[0]["routerId"] == "10.255.1.1", "and the identity BGP uses for it"
+
+
+def test_a_router_that_cannot_be_read_keeps_its_last_known_asn(bare_poller, tmp_path):
+    """An unreachable router should not have its label blanked: the last thing
+    it said is the honest thing to show, and `lastSeen` is what says how old
+    that is."""
+    import asyncio
+
+    class Client:
+        class containers:
+            @staticmethod
+            def list(filters=None):
+                return [FakeContainer("clab-test-isp1")]
+
+    async def broadcast(message):
+        pass
+
+    p = bare_poller(broadcast=broadcast, topology_path=tmp_path / "none.yml", client=Client,
+                    nodes=[{"name": "isp1", "asn": 65100, "routerId": "10.255.1.1"}])
+    p._poll_node_sync = lambda n: {"error": "vtysh timed out"}        # noqa: ARG005
+
+    asyncio.run(LabPoller.poll_all(p))
+    assert p.nodes[0]["asn"] == 65100
+    assert p.nodes[0]["routerId"] == "10.255.1.1"

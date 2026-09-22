@@ -87,7 +87,7 @@ sudo docker run -d --name bgp-dashboard \
   bgp-dashboard:latest
 ```
 
-Topology nodes are discovered from the YAML at startup, so a dashboard restart is needed if you add/remove nodes from the underlying lab.
+Routers are discovered from Docker on every poll — containers named `<LAB_PREFIX>-<node>` — so a router added to or removed from the lab appears or goes without restarting the dashboard. The topology YAML is optional and decides only the ORDER they are listed in; the AS and the router-id are read from each router's own `show ip bgp summary json`.
 
 ## How it works
 
