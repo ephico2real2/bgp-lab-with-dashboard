@@ -58,8 +58,21 @@ def test_every_image_ci_builds_is_labelled_with_its_commit():
     builds = re.findall(r"docker buildx build(.*?)dashboard/", WORKFLOW, re.S)
     assert len(builds) >= 3, f"expected the cache, load and push builds; found {len(builds)}"
     for i, build in enumerate(builds):
-        assert "image.revision" in build or "LABELS[@]" in build, (
-            f"buildx invocation {i} carries no revision label")
+        assert "REVISION=" in build or "LABELS[@]" in build, (
+            f"buildx invocation {i} is built without a revision")
+
+
+def test_the_revision_reaches_both_the_label_and_the_running_app():
+    """One build argument, two destinations. Two independent mechanisms for the
+    same fact would be two things to keep in step, and the first time they
+    disagreed the page would be confidently wrong about which build it is."""
+    live = "\n".join(line for line in DOCKERFILE.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#"))
+    assert re.search(r"^ARG REVISION=", live, re.M), "the Dockerfile takes no REVISION argument"
+    assert re.search(r'org\.opencontainers\.image\.revision="?\$REVISION', live), (
+        "the OCI label is not built from the argument")
+    assert re.search(r"DASHBOARD_REVISION=\$REVISION", live), (
+        "the app is not given the argument to serve on /api/version")
 
 
 def test_the_image_says_what_it_is():

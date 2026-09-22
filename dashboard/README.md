@@ -127,7 +127,7 @@ a twice-delivered event once.
 |---|---|
 | `Dockerfile` | python:3.12-slim base + FastAPI + docker SDK |
 | `requirements.txt` | pinned deps |
-| `app/main.py` | FastAPI app: `/`, `/api/state`, `/api/events`, `/ws` |
+| `app/main.py` | FastAPI app: `/`, `/api/state`, `/api/events`, `/api/version`, `/ws` |
 | `app/poller.py` | async polling, state diff, event generation |
 | `app/static/index.html` | shell layout |
 | `app/static/dashboard.js` | Cytoscape graph + WebSocket client |
@@ -136,10 +136,17 @@ a twice-delivered event once.
 
 ## Extending
 
+`/api/version` answers which build is serving the page — the same commit the
+image carries as `org.opencontainers.image.revision`, because both come from
+one build argument. The header shows the short form and links to the commit;
+an image not built by CI says `local build` rather than inventing a number.
+
 Environment:
 
 | var | default | what it does |
 |---|---|---|
+| `DASHBOARD_REVISION` | `unknown` | baked in at build time; shown in the header |
+| `DASHBOARD_BUILT` | `unknown` | baked in at build time; the tooltip's build date |
 | `LAB_TOPOLOGY` | `/lab/topology.yml` | the containerlab YAML the node list is read from |
 | `LAB_PREFIX` | `clab-simple-lab` | container names are `<prefix>-<node>` |
 | `POLL_INTERVAL` | `2` | seconds between polls |

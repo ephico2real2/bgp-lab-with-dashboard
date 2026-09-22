@@ -604,3 +604,32 @@ def test_a_router_that_cannot_be_read_keeps_its_last_known_asn(bare_poller, tmp_
     asyncio.run(LabPoller.poll_all(p))
     assert p.nodes[0]["asn"] == 65100
     assert p.nodes[0]["routerId"] == "10.255.1.1"
+
+
+# ---- which build is serving this page -------------------------------------
+
+def test_the_version_endpoint_reports_what_was_baked_in(monkeypatch):
+    import asyncio
+    import main
+
+    monkeypatch.setenv("DASHBOARD_REVISION", "9a5244173777c79577554d2fc0ed59c77fe3368d")
+    monkeypatch.setenv("DASHBOARD_BUILT", "2026-09-22T13:27:25Z")
+    body = asyncio.run(main.version())
+    assert body["revision"] == "9a5244173777c79577554d2fc0ed59c77fe3368d"
+    assert body["short"] == "9a52441", "the header shows the short form"
+    assert body["built"] == "2026-09-22T13:27:25Z"
+    assert body["source"].startswith("https://"), "the header links the commit somewhere"
+
+
+def test_an_image_that_was_not_built_by_ci_says_so(monkeypatch):
+    """"unknown" is a real answer: it tells a reader the page in front of them
+    is not a published build. Inventing a number would be worse than silence."""
+    import asyncio
+    import main
+
+    monkeypatch.delenv("DASHBOARD_REVISION", raising=False)
+    monkeypatch.delenv("DASHBOARD_BUILT", raising=False)
+    body = asyncio.run(main.version())
+    assert body["revision"] == "unknown"
+    assert body["short"] == "unknown", "no 7-character slice of the word 'unknown'"
+    assert body["built"] == "unknown"

@@ -113,6 +113,12 @@ services:
     build:
       context: ../dashboard
       dockerfile: Dockerfile
+      args:
+        # ci/up.sh fills these from git. A build that cannot say where it came
+        # from says "unknown", which is the useful answer: it tells a reader
+        # the page in front of them is not a published build.
+        REVISION: ${REVISION:-unknown}
+        BUILT: ${BUILT:-unknown}
     container_name: clab-simple-lab-dashboard
     hostname: dashboard
     environment:

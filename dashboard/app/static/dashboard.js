@@ -874,6 +874,33 @@ async function catchUp(retry = true) {
   }
 }
 
+// Which build is on the screen. It is asked once, because an image cannot
+// change under a running container — and it is shown rather than logged,
+// because the question "is this the version with the fix?" was asked of this
+// dashboard repeatedly and could only be answered by diffing its served files
+// against a checkout.
+async function showBuild() {
+  const el = document.getElementById("build");
+  if (!el) return;
+  try {
+    const res = await fetch("/api/version", { cache: "no-store" });
+    if (!res.ok) return;
+    const v = await res.json();
+    const known = v.revision && v.revision !== "unknown";
+    el.textContent = known ? `build ${v.short}` : "local build";
+    el.title = known
+      ? `${v.revision}\nbuilt ${v.built}`
+      : "this image was not built by CI and cannot say which commit it came from";
+    if (known && v.source) el.href = `${v.source}/commit/${v.revision}`;
+    else el.removeAttribute("href");
+    el.classList.toggle("build-unknown", !known);
+    el.hidden = false;
+  } catch (err) {
+    // provenance is not worth breaking the page for
+    console.warn("build version unavailable", err);
+  }
+}
+
 // The page used to render nothing at all until the socket delivered a
 // snapshot: a slow, proxied or blocked WebSocket showed an empty page with no
 // explanation of what it was waiting for. HTTP first, then the stream.
@@ -896,6 +923,7 @@ async function bootstrap() {
 }
 
 wireGraphTools();
+showBuild();
 bootstrap();
 
 for (const id of ["view-events", "view-traffic"]) {

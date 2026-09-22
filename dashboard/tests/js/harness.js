@@ -30,7 +30,7 @@ function el(id, attrs = {}) {
     fire(type, ev = {}) { for (const fn of this.handlers[type] || []) fn({ currentTarget: this, preventDefault() {}, ...ev }); },
     setAttribute(k, v) { this[k] = v; (this.attrs ||= {})[k] = v; },
     getAttribute(k) { return (this.attrs || {})[k]; },
-    classList: { contains: (c) => (attrs.className || "").split(/\s+/).includes(c) },
+    removeAttribute(k) { delete this[k]; if (this.attrs) delete this.attrs[k]; },
     querySelector() { return null; },
     querySelectorAll(sel) {
       const m = /^\[data-([a-z]+)\]$/.exec(sel);
@@ -39,6 +39,24 @@ function el(id, attrs = {}) {
     },
     get lastChild() { return this.children[this.children.length - 1] || null; },
   };
+  // A real classList, over the element's own className. The first version of
+  // this was `{ contains }` alone, and `classList.toggle` threw inside a
+  // try/catch in the page — so two cases passed on the assertions made before
+  // the throw and only a third noticed anything was wrong.
+  const classes = new Set(String(attrs.className || "").split(/\s+/).filter(Boolean));
+  const sync = () => { node.className = [...classes].join(" "); };
+  node.classList = {
+    contains: (c) => classes.has(c),
+    add: (c) => { classes.add(c); sync(); },
+    remove: (c) => { classes.delete(c); sync(); },
+    toggle: (c, on) => {
+      const want = on === undefined ? !classes.has(c) : Boolean(on);
+      if (want) classes.add(c); else classes.delete(c);
+      sync();
+      return want;
+    },
+  };
+  if (attrs.hidden !== undefined) node.hidden = attrs.hidden;
   return node;
 }
 
@@ -47,6 +65,10 @@ function makeContext() {
   const timers = [];
   // The legend as index.html declares it, so a case can check that the page
   // paints the swatches rather than that the harness invented some.
+  // index.html declares this one hidden — the page reveals it once it knows
+  // which build it is. A stub that started it visible would let a version that
+  // is never fetched look like one that was.
+  const build = el("build", { hidden: true });
   const legend = el("legend", { children: [
     el("s1", { className: "swatch", dataset: { state: "Established" } }),
     el("s2", { className: "swatch", dataset: { state: "Active" } }),
@@ -59,6 +81,7 @@ function makeContext() {
   const document = {
     getElementById(id) {
       if (id === "legend") return legend;
+      if (id === "build") return build;
       if (!byId.has(id)) byId.set(id, el(id));
       return byId.get(id);
     },
@@ -99,7 +122,7 @@ globalThis.__t = {
   setCy: (v) => { cy = v; },
   buildElements, updateGraph, worseState, stateRank, stateColor, addEvent,
   eventClock, VANISHED_GRACE_MS, connect, catchUp,
-  eventsEl, sidebarContent, paintLegend, updateSelectionCount, wireGraphTools, handleResize,
+  eventsEl, sidebarContent, paintLegend, updateSelectionCount, wireGraphTools, handleResize, showBuild,
   setSelected: (v) => { selectedNode = v; },
   trafficEl: document.getElementById("traffic"),
 };`;
@@ -805,6 +828,37 @@ const CASES = {
     t.setState({});
     eq(t.buildElements().find((e) => e.data.id === "leaf1").data.label, "leaf1\nAS65101",
        "the file's number is the fallback, not the source");
+  },
+
+  "the header says which build is serving the page": async (t) => {
+    t.ctx.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({
+      revision: "9a5244173777c79577554d2fc0ed59c77fe3368d", short: "9a52441",
+      built: "2026-09-22T13:27:25Z",
+      source: "https://github.com/ephico2real2/bgp-lab-with-dashboard" }) });
+    await t.showBuild();
+    const el = t.ctx.document.getElementById("build");
+    eq(el.textContent, "build 9a52441", "the short revision");
+    eq(el.hidden, false, "and it is visible");
+    if (!/9a5244173777c79577554d2fc0ed59c77fe3368d/.test(el.title)) throw new Error(`no full sha in the tooltip: ${el.title}`);
+    if (!/2026-09-22T13:27:25Z/.test(el.title)) throw new Error("no build time in the tooltip");
+    eq(el.href, "https://github.com/ephico2real2/bgp-lab-with-dashboard/commit/9a5244173777c79577554d2fc0ed59c77fe3368d",
+       "and it links the commit");
+  },
+
+  "a build that cannot name itself says so instead of inventing a number": async (t) => {
+    t.ctx.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({
+      revision: "unknown", short: "unknown", built: "unknown", source: "https://example.invalid" }) });
+    await t.showBuild();
+    const el = t.ctx.document.getElementById("build");
+    eq(el.textContent, "local build", "named for what it is");
+    if (/unknown/.test(el.textContent)) throw new Error("the word 'unknown' is not a build name");
+    if (el.href) throw new Error("it links to a commit that does not exist");
+  },
+
+  "a version endpoint that fails does not break the page": async (t) => {
+    t.ctx.fetch = () => Promise.reject(new Error("nope"));
+    await t.showBuild();                       // must not throw
+    eq(t.ctx.document.getElementById("build").hidden, true, "nothing is claimed");
   },
 
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {
