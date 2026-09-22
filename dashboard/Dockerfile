@@ -20,4 +20,9 @@ COPY app/ ./
 
 EXPOSE 8080
 
+# 0.0.0.0 is the CONTAINER's namespace, not the host's: what decides who can
+# reach this page is the port publish, and both the compose file and
+# simple.clab.yml bind it to 127.0.0.1. Narrowing this to one address waits on
+# the management-network design (#14, #16) — until the dashboard has an
+# interface of its own there is no address here worth binding to.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

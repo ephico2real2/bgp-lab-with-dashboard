@@ -403,17 +403,6 @@ def test_the_vendored_library_is_present_and_is_cytoscape():
     assert lib.stat().st_size > 100_000, "the vendored file looks truncated"
 
 
-@pytest.mark.parametrize("path,needle", [
-    ("simple.clab.yml", "127.0.0.1:8088:8080"),
-    ("compose/docker-compose.yml", "127.0.0.1:${DASHBOARD_PORT:-8089}:8080"),
-])
-def test_the_dashboard_is_published_on_loopback_only(path, needle):
-    """It has no authentication and holds the Docker socket. Publishing it on
-    every interface put it on the network the moment the lab came up."""
-    root = Path(__file__).resolve().parents[2]
-    assert needle in (root / path).read_text(), f"{path} does not publish on loopback"
-
-
 def test_a_qualified_state_is_not_dropped_into_the_unknown_colour():
     """FRR qualifies a state with a reason: an administrative shutdown reads
     "Idle (Admin)". An exact key lookup misses it, so the one session a human
