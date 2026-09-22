@@ -41,9 +41,144 @@ main {
   overflow: hidden;
 }
 
-#graph { background: white; }
+/* The graph pane is a column: the canvas takes what is left, the foot is as
+   tall as its content. `min-height: 0` on both is what stops a grid item from
+   refusing to shrink below its content — without it the legend pushes the
+   canvas past the viewport instead of taking room from it. */
+#graph-pane {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  /* The implicit column is `auto`, which is max-content: the legend's longest
+     line held this pane's CHILDREN at 820 px inside a 375 px pane — measured,
+     main and the pane were 375 while #graph and .graph-foot were 820. */
+  grid-template-columns: minmax(0, 1fr);
+  /* Both floors, and they are not the same trap twice. A grid item refuses to
+     shrink below its CONTENT unless it is told it may: measured at a 375 px
+     viewport, the legend's longest line held this pane at 820 px, so the
+     canvas sized itself to 820 and three of the four routers were off-screen.
+     The symptom looked like a broken resize handler; it was this. */
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#graph {
+  background: white;
+  min-height: 0;
+}
+
+#graph:focus-visible { outline: 2px solid #0969da; outline-offset: -2px; }
+
+.graph-foot {
+  border-top: 1px solid #d0d7de;
+  background: #f6f8fa;
+  padding: 0.4rem 0.6rem;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.graph-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.graph-tools button {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: white;
+  color: #1f2328;
+  cursor: pointer;
+}
+.graph-tools button:hover { background: #f3f4f6; }
+.legend-toggle[aria-expanded="true"] { background: #ddf4ff; border-color: #0969da; }
+
+.sel-count {
+  color: #57606a;
+  font-size: 0.75rem;
+  margin-right: auto;      /* pushes the legend button to the far end */
+}
+
+/* `display: grid` beats the `hidden` attribute's `display: none`, so without
+   this the legend can never be closed and the toggle's aria-expanded is a
+   claim about nothing. Measured: #legend reported 804 px wide with the
+   attribute set. */
+.legend[hidden] { display: none; }
+
+.legend {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  /* `1fr` is minmax(auto, 1fr), and that auto minimum is the longest line. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #1f2328;
+}
+
+/* A hanging indent rather than a flex row: a flex item will not shrink below
+   its content, so a long entry was clipped by the pane instead of wrapping
+   under its own text. */
+.legend li {
+  padding-left: 1.55rem;
+  text-indent: -1.55rem;
+}
+.legend code { font-size: 0.95em; background: #eff1f3; padding: 0 0.2em; border-radius: 3px; }
+
+/* The swatch carries no colour of its own: dashboard.js paints it from the
+   same function the edges and nodes are painted from. */
+.swatch {
+  display: inline-block;
+  vertical-align: middle;
+  width: 1.1rem;
+  height: 0.55rem;
+  margin-right: 0.45rem;
+  border-radius: 2px;
+  background: #8b8b8b;
+  text-indent: 0;
+}
+.swatch-dashed {
+  height: 0;
+  border-top: 3px dashed #8b8b8b;
+  background: none;
+  border-radius: 0;
+}
+/* A row with no colour of its own still lines up with the ones that have. */
+.swatch-none { background: none; }
+
+.swatch-outline {
+  background: none;
+  border: 2px solid #0969da;
+  border-radius: 3px;
+  height: 0.7rem;
+}
+
+@media (max-width: 720px) {
+  .sel-count { margin-right: 0; width: 100%; }
+
+  /* `1fr 380px` gives the sidebar the whole viewport under about 400 px and
+     collapses the topology — and with it the legend — to nothing. Measured at
+     375 px: the graph pane rendered 0 px wide and the page showed only the
+     sidebar and the events. Stack them instead. */
+  main {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  #sidebar {
+    border-left: 0;
+    border-top: 1px solid #d0d7de;
+    max-height: 40vh;
+  }
+}
 
 #sidebar {
+  min-width: 0;
   border-left: 1px solid #d0d7de;
   background: white;
   padding: 0.75rem 1rem;

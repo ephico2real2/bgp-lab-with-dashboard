@@ -35,7 +35,7 @@ CASES = run_harness() if NODE else []
 def test_the_harness_ran_every_case():
     """A harness that silently stopped loading the file would otherwise report
     nothing and pass."""
-    assert len(CASES) >= 23, f"only {len(CASES)} cases ran — did dashboard.js stop loading?"
+    assert len(CASES) >= 26, f"only {len(CASES)} cases ran — did dashboard.js stop loading?"
 
 
 @pytest.mark.skipif(not NODE, reason="node is not installed; the page's logic cannot be run")

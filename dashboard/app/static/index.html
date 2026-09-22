@@ -16,7 +16,35 @@
     <span id="status" class="status status-disconnected">disconnected</span>
   </header>
   <main>
-    <section id="graph"></section>
+    <section id="graph-pane">
+      <div id="graph" tabindex="0" aria-label="topology"></div>
+      <div class="graph-foot">
+        <div class="graph-tools">
+          <button type="button" id="select-all" title="Select every node (Ctrl/Cmd+A with the graph focused)">Select all</button>
+          <button type="button" id="clear-sel" title="Clear the selection (Escape)">Clear</button>
+          <button type="button" id="reset-layout" title="Lay the topology out again">Reset layout</button>
+          <span id="sel-count" class="sel-count">shift-drag to select · drag a selected node to move them together</span>
+          <button type="button" id="legend-toggle" class="legend-toggle" aria-expanded="false" aria-controls="legend">Legend</button>
+        </div>
+        <!-- Every swatch below is painted at runtime by the same function that
+             paints the graph — `data-state` through stateColor(), `data-role`
+             through ROLE_COLORS. A legend that carried its own hex values
+             would be a second source of truth, and the first time someone
+             changed a colour the page and its key would disagree. -->
+        <ul id="legend" class="legend" hidden>
+          <li><i class="swatch" data-state="Established"></i> Established — both ends agree the session is up</li>
+          <li><i class="swatch" data-state="Active"></i> coming up or going down (Active, Connect, OpenSent, OpenConfirm)</li>
+          <li><i class="swatch" data-state="Idle"></i> Idle — down, including <code>Idle (Admin)</code> after a shutdown</li>
+          <li><i class="swatch swatch-dashed" data-state="vanished"></i> vanished — the session is in neither router's table; the edge goes after 30 s</li>
+          <li><i class="swatch" data-role="edge"></i> a company — the node's name does NOT match <code>/isp/i</code></li>
+          <li><i class="swatch" data-role="isp"></i> transit — the name DOES match <code>/isp/i</code>. The role is
+              guessed from the name, not read from BGP, so a router named otherwise is drawn as a company</li>
+          <li><i class="swatch swatch-outline" aria-hidden="true"></i> selected — drag one to move them all</li>
+          <li><i class="swatch swatch-none" aria-hidden="true"></i> an address with a second line is that END's own
+              state, shown only when the two ends disagree</li>
+        </ul>
+      </div>
+    </section>
     <aside id="sidebar">
       <h2 id="sidebar-title">Click a router</h2>
       <div id="sidebar-content">
