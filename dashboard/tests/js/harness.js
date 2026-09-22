@@ -17,15 +17,26 @@ const vm = require("vm");
 const SRC = path.resolve(__dirname, "..", "..", "app", "static", "dashboard.js");
 
 // ---- the smallest DOM the page touches ------------------------------------
-function el(id) {
+function el(id, attrs = {}) {
   const node = {
-    id, className: "", innerHTML: "", textContent: "", title: "", hidden: false,
-    dataset: {}, children: [],
+    id, className: attrs.className || "", innerHTML: "", textContent: "", title: "", hidden: false,
+    dataset: attrs.dataset || {}, children: attrs.children || [], style: {}, handlers: {},
     prepend(child) { this.children.unshift(child); },
     removeChild(child) { this.children = this.children.filter((c) => c !== child); },
     appendChild(child) { this.children.push(child); },
-    addEventListener() {},
+    // Handlers are KEPT and fired by the cases. A stub that swallowed them
+    // would let a button wired to nothing pass every test.
+    addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); },
+    fire(type, ev = {}) { for (const fn of this.handlers[type] || []) fn({ currentTarget: this, preventDefault() {}, ...ev }); },
+    setAttribute(k, v) { this[k] = v; (this.attrs ||= {})[k] = v; },
+    getAttribute(k) { return (this.attrs || {})[k]; },
+    classList: { contains: (c) => (attrs.className || "").split(/\s+/).includes(c) },
     querySelector() { return null; },
+    querySelectorAll(sel) {
+      const m = /^\[data-([a-z]+)\]$/.exec(sel);
+      if (!m) return [];
+      return this.children.filter((c) => c.dataset && c.dataset[m[1]] !== undefined);
+    },
     get lastChild() { return this.children[this.children.length - 1] || null; },
   };
   return node;
@@ -34,8 +45,20 @@ function el(id) {
 function makeContext() {
   const byId = new Map();
   const timers = [];
+  // The legend as index.html declares it, so a case can check that the page
+  // paints the swatches rather than that the harness invented some.
+  const legend = el("legend", { children: [
+    el("s1", { className: "swatch", dataset: { state: "Established" } }),
+    el("s2", { className: "swatch", dataset: { state: "Active" } }),
+    el("s3", { className: "swatch", dataset: { state: "Idle" } }),
+    el("s4", { className: "swatch swatch-dashed", dataset: { state: "vanished" } }),
+    el("s5", { className: "swatch", dataset: { role: "edge" } }),
+    el("s6", { className: "swatch", dataset: { role: "isp" } }),
+  ] });
+  legend.hidden = true;
   const document = {
     getElementById(id) {
+      if (id === "legend") return legend;
       if (!byId.has(id)) byId.set(id, el(id));
       return byId.get(id);
     },
@@ -54,8 +77,9 @@ function makeContext() {
     // Timers are RECORDED, not run. The page arms one to sweep a vanished edge
     // away, and a stub that swallowed it would let that timer disappear without
     // a single case noticing.
-    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    setTimeout: (fn, ms) => { const id = timers.length + 1; timers.push({ fn, ms, id }); return id; },
     setImmediate,
+    clearTimeout: (id) => { const i = timers.findIndex((t) => t.id === id); if (i >= 0) timers.splice(i, 1); },
     Date,
     JSON,
     Math,
@@ -75,7 +99,7 @@ globalThis.__t = {
   setCy: (v) => { cy = v; },
   buildElements, updateGraph, worseState, stateRank, stateColor, addEvent,
   eventClock, VANISHED_GRACE_MS, connect, catchUp,
-  eventsEl, sidebarContent,
+  eventsEl, sidebarContent, paintLegend, updateSelectionCount, wireGraphTools, handleResize,
   setSelected: (v) => { selectedNode = v; },
   trafficEl: document.getElementById("traffic"),
 };`;
@@ -576,6 +600,90 @@ const CASES = {
     } finally {
       Date.now = realNow;
     }
+  },
+
+  "every legend swatch is painted from the colour the graph uses": (t) => {
+    // The legend carries no colour of its own. If it did, the page and its key
+    // would be two sources of truth for the same fact, and the first time one
+    // changed the other would quietly lie.
+    t.paintLegend();
+    const legend = t.ctx.document.getElementById("legend");
+    const byState = Object.fromEntries(legend.children
+      .filter((c) => c.dataset.state)
+      .map((c) => [c.dataset.state, c.classList.contains("swatch-dashed") ? c.style.borderTopColor : c.style.background]));
+    eq(byState.Established, t.stateColor("Established"), "Established");
+    eq(byState.Idle, t.stateColor("Idle"), "Idle");
+    eq(byState.Active, t.stateColor("Active"), "Active");
+    eq(byState.vanished, t.stateColor("vanished"), "vanished (the dashed swatch)");
+    if (byState.Established === byState.Idle) throw new Error("up and down are drawn the same colour");
+    const isp = legend.children.find((c) => c.dataset.role === "isp");
+    if (!/#/.test(String(isp.style.background))) throw new Error("the role swatch was not painted");
+  },
+
+  "the tools select, clear and toggle — and are wired to something": (t) => {
+    t.setNodes(twoRouters);
+    t.setState(stateOf({ fromLeaf: "Established", fromSpine: "Established" }));
+    const sel = new Set();
+    const nodes = [{ id: () => "leaf1" }, { id: () => "spine" }];
+    const collection = {
+      select: () => nodes.forEach((n) => sel.add(n.id())),
+      unselect: () => sel.clear(),
+    };
+    t.setCy({
+      nodes: () => collection,
+      $: () => ({ length: sel.size }),
+      edges: () => [],
+      getElementById: () => ({ empty: () => true }),
+      add: () => {},
+      layout: () => ({ run: () => { collection.laidOut = true; } }),
+    });
+    t.wireGraphTools();
+    const doc = t.ctx.document;
+
+    doc.getElementById("select-all").fire("click");
+    eq([...sel].sort(), ["leaf1", "spine"], "select all");
+    if (!/2 selected/.test(doc.getElementById("sel-count").textContent)) {
+      throw new Error(`the count does not say what is selected: ${doc.getElementById("sel-count").textContent}`);
+    }
+    doc.getElementById("clear-sel").fire("click");
+    eq(sel.size, 0, "clear");
+
+    // Ctrl/Cmd+A and Escape, scoped to the graph
+    doc.getElementById("graph").fire("keydown", { ctrlKey: true, key: "a" });
+    eq(sel.size, 2, "ctrl+A selects every node");
+    doc.getElementById("graph").fire("keydown", { key: "Escape" });
+    eq(sel.size, 0, "escape clears");
+
+    doc.getElementById("reset-layout").fire("click");
+    eq(collection.laidOut, true, "reset layout runs a layout");
+
+    const legend = doc.getElementById("legend");
+    const toggle = doc.getElementById("legend-toggle");
+    eq(legend.hidden, true, "the legend starts closed");
+    toggle.fire("click");
+    eq(legend.hidden, false, "and opens");
+    eq(toggle.getAttribute("aria-expanded"), "true", "the button says so");
+    toggle.fire("click");
+    eq(legend.hidden, true, "and closes again");
+    eq(toggle.getAttribute("aria-expanded"), "false", "and says that too");
+  },
+
+  "the graph is re-fitted when the pane changes size": (t) => {
+    // Cytoscape reads its container's size once. After the columns stack at a
+    // phone width the canvas keeps its old dimensions and most of the graph is
+    // outside the viewport — measured: one node of four visible at 375 px.
+    const calls = [];
+    t.setCy({ resize: () => calls.push("resize"), fit: (e, p) => calls.push(`fit:${p}`),
+              edges: () => [], nodes: () => ({ select() {}, unselect() {} }), $: () => ({ length: 0 }),
+              getElementById: () => ({ empty: () => true }), add: () => {} });
+    t.handleResize();
+    eq(calls, [], "nothing happens until the burst of resize events settles");
+    eq(t.timers.length, 1, "one debounce timer");
+    t.handleResize();
+    t.handleResize();
+    eq(t.timers.length, 1, "still one — a drag across the screen is not fifty re-fits");
+    t.runTimers();
+    eq(calls, ["resize", "fit:30"], "the canvas is re-read and the nodes brought back into view");
   },
 
   "the stamp is shown on the reader's clock and kept in the tooltip": (t) => {

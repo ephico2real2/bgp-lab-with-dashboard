@@ -298,12 +298,116 @@ function buildGraph() {
       },
     ],
     layout: { name: "cose", animate: false, padding: 30 },
+    // Shift-drag draws a selection box (plain drag still pans), clicking adds
+    // to the selection rather than replacing it, and Cytoscape moves every
+    // selected node when one of them is grabbed. Without `additive` a reader
+    // can only ever hold one node, which makes "move them together"
+    // impossible to discover.
+    boxSelectionEnabled: true,
+    selectionType: "additive",
   });
 
   cy.on("tap", "node", (e) => {
     selectedNode = e.target.id();
     renderDetail(selectedNode);
   });
+  cy.on("select unselect", "node", updateSelectionCount);
+  paintLegend();
+  updateSelectionCount();
+}
+
+// paintLegend colours each swatch from the SAME source the graph is drawn
+// from: `data-state` through stateColor(), `data-role` through ROLE_COLORS. A
+// legend that carried its own values would be a second source of truth, and
+// the first time a colour changed the page and its key would disagree without
+// anything failing.
+function paintLegend() {
+  const legend = document.getElementById("legend");
+  if (!legend || !legend.querySelectorAll) return;
+  for (const el of legend.querySelectorAll("[data-state]")) {
+    const colour = stateColor(el.dataset.state);
+    if (el.classList && el.classList.contains("swatch-dashed")) el.style.borderTopColor = colour;
+    else el.style.background = colour;
+  }
+  for (const el of legend.querySelectorAll("[data-role]")) {
+    const role = ROLE_COLORS[el.dataset.role];
+    if (!role) continue;
+    el.style.background = role.bg;
+    el.style.border = `2px solid ${role.border}`;
+  }
+}
+
+function updateSelectionCount() {
+  const el = document.getElementById("sel-count");
+  if (!el) return;
+  const n = cy ? cy.$("node:selected").length : 0;
+  el.textContent = n
+    ? `${n} selected · drag one to move them together`
+    : "shift-drag to select · drag a selected node to move them together";
+}
+
+// The controls exist so the selection is DISCOVERABLE: shift-drag and
+// Ctrl/Cmd+A are not things a reader guesses at. Every one of them tolerates
+// its element being absent, because the page is also loaded by tests that
+// build only the parts they are exercising.
+// Cytoscape sizes its canvas when it is created and never again: the pane
+// changes size when the window does, and the graph then sits at its old
+// dimensions with most of itself outside the viewport. Measured at 375 px
+// after the columns stack — one node visible out of four. resize() re-reads
+// the container, fit() brings the nodes back into view; neither moves a node,
+// so an arrangement a reader made by hand survives.
+let resizeTimer = null;
+
+function handleResize() {
+  if (!cy) return;
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null;
+    cy.resize();
+    cy.fit(undefined, 30);
+  }, 150);
+}
+
+let toolsWired = false;
+
+function wireGraphTools() {
+  // Idempotent. Every listener here TOGGLES or acts, so binding a second set
+  // makes one click do the work twice — the legend button opened and closed
+  // again in the same event, which is exactly how this was found.
+  if (toolsWired) return;
+  toolsWired = true;
+  const on = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el && el.addEventListener) el.addEventListener("click", fn);
+  };
+  on("select-all", () => { if (cy) cy.nodes().select(); updateSelectionCount(); });
+  on("clear-sel", () => { if (cy) cy.nodes().unselect(); updateSelectionCount(); });
+  on("reset-layout", () => { if (cy) cy.layout({ name: "cose", animate: false, padding: 30 }).run(); });
+  on("legend-toggle", (e) => {
+    const legend = document.getElementById("legend");
+    if (!legend) return;
+    const open = legend.hidden;
+    legend.hidden = !open;
+    const btn = e && e.currentTarget;
+    if (btn && btn.setAttribute) btn.setAttribute("aria-expanded", String(open));
+  });
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("resize", handleResize);
+  }
+  const graph = document.getElementById("graph");
+  if (graph && graph.addEventListener) {
+    // Scoped to the graph, so Ctrl/Cmd+A still selects text everywhere else.
+    graph.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        if (cy) cy.nodes().select();
+        updateSelectionCount();
+      } else if (e.key === "Escape") {
+        if (cy) cy.nodes().unselect();
+        updateSelectionCount();
+      }
+    });
+  }
 }
 
 // updateGraph is the only thing that sweeps a vanished edge away, and it runs
@@ -716,6 +820,7 @@ async function bootstrap() {
   connect();
 }
 
+wireGraphTools();
 bootstrap();
 
 for (const id of ["view-events", "view-traffic"]) {
