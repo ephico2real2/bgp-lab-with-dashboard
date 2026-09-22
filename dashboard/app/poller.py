@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -40,6 +41,14 @@ class LabPoller:
         # catch up on what it missed.
         self.events: deque[dict[str, Any]] = deque(maxlen=events_ring)
         self.last_event_id = 0
+        # Names THIS process. Ids restart at 1 with it, and a page holding
+        # ids from the previous one cannot always tell the two apart by
+        # number: measured on this lab, the first poll of a fresh poller
+        # issued 18 events, so a page that held 18 or fewer was told a lastId
+        # that was not below its own and went on suppressing every new event
+        # by an id it had marked rendered in the old process. Random rather
+        # than clock-and-pid: a container restarts with the same pid.
+        self.epoch = uuid.uuid4().hex
 
     def _load_nodes(self) -> list[dict[str, Any]]:
         topology = yaml.safe_load(self.topology_path.read_text())

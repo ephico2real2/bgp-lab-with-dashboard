@@ -136,7 +136,13 @@ def interpolations(tpl: str) -> list[str]:
     return out
 
 
-ASSIGN = r"(?<![=!<>+\-*/%&|^])\b{name}\s*=(?![=>])"
+# A name given a value after its declaration: plain `=`, or any compound
+# assignment (`+=`, `||=`, `??=`, `**=`, `<<=`, …). Not a comparison (`==`,
+# `===`, `<=`, `>=`), not an arrow (`=>`), and not a PROPERTY of that name
+# (`li.stamp = 1` binds nothing). Measured against the guard as shipped:
+# `stamp ||= ev.ts`, `stamp += ev.ts`, `[stamp] = [ev.ts]`, `({ stamp } = ev)`
+# and `for (stamp of …)` all still resolved to the one safe declaration.
+ASSIGN = r"(?<![.\w$]){name}\s*(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?![=>])"
 
 
 def bound_elsewhere(src: str, name: str) -> bool:
@@ -165,6 +171,8 @@ def bound_elsewhere(src: str, name: str) -> bool:
         rf"for\s*\(\s*(?:const|let|var)\s+{n}\b",                             # a loop binding
         rf"\bcatch\s*\(\s*{n}\s*\)",                                          # a caught error
         rf"(?:const|let|var)\s*[\[{{][^\]}}]*\b{n}\b[^\]}}]*[\]}}]\s*=",      # destructuring
+        rf"[\[{{][^\]}}=]*\b{n}\b[^\]}}=]*[\]}}]\s*=(?![=>])",                # destructuring assignment
+        rf"for\s*\(\s*(?:(?:const|let|var)\s+)?(?:[\[{{][^\]}}]*)?\b{n}\b[^)]*?\s(?:of|in)\s",  # for-of / for-in target
     ):
         if re.search(pattern, src):
             return True
@@ -418,3 +426,33 @@ def test_a_qualified_state_is_not_dropped_into_the_unknown_colour():
     assert 'stateColor(e.data("state"))' in src, "the edge style does not use stateColor()"
     m = re.search(r"function stateColor\(state\)\s*\{(.+?)\n\}", src, re.S)
     assert m and "startsWith" in m.group(1), "stateColor() does not match on a prefix"
+
+
+@pytest.mark.parametrize("src", [
+    "let stamp = esc(clock.text); if (ev.raw) stamp = ev.ts;",
+    "let stamp = esc(clock.text); stamp += ev.ts;",
+    "let stamp = esc(clock.text); stamp ||= ev.ts;",
+    "let stamp = esc(clock.text); stamp ??= ev.ts;",
+    "let stamp = esc(clock.text); [stamp] = [ev.ts];",
+    "let stamp = esc(clock.text); ({ stamp } = ev);",
+    "let stamp = esc(clock.text); for (stamp of [ev.ts]) {}",
+    "let stamp = esc(clock.text); for (const [k, stamp] of pairs) {}",
+    "const stamp = esc(clock.text); function g(stamp) { return stamp; }",
+    "const stamp = esc(clock.text); const h = (stamp) => stamp;",
+])
+def test_bound_elsewhere_sees_every_way_a_name_is_rebound(src):
+    """Each of these renders `ev.ts` raw through `${stamp}` while the one
+    declaration in the file is `esc(...)`. Measured against the guard as
+    shipped, the compound, destructuring and for-of forms all passed it."""
+    assert bound_elsewhere(src, "stamp"), src
+
+
+@pytest.mark.parametrize("src", [
+    "const stamp = esc(clock.text); li.stamp = 1;",
+    "const stamp = esc(clock.text); if (stamp == x || x === stamp || stamp <= y) {}",
+    "const stamp = esc(clock.text); const o = { stamp: 1 }; const y = o.stamp;",
+])
+def test_bound_elsewhere_does_not_refuse_a_name_that_is_only_read(src):
+    """A property called stamp, a comparison, an object key: none of them binds
+    the name, and refusing to follow it would fail the guard on safe code."""
+    assert not bound_elsewhere(src, "stamp"), src

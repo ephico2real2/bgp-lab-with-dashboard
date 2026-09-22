@@ -602,6 +602,12 @@ function eventClock(ts) {
 // fetch, once on the socket — is drawn once. Pruned with the list it mirrors.
 const renderedEvents = new Set();
 let lastEventId = 0;
+// The process that issued the ids in renderedEvents. Ids restart at 1 with
+// the poller, and `lastId < lastEventId` only sees a restart whose new
+// history is SHORTER than what the page holds: measured on this lab, a fresh
+// poller's first poll issues 18 events, so a page holding 18 saw lastId=18,
+// asked since=18, and suppressed all 18 new events by id.
+let pollerEpoch = null;
 
 function addEvent(ev) {
   if (!ev) return;
@@ -663,7 +669,9 @@ async function catchUp(retry = true) {
     // high-water mark, on a page that still said "connected". A lastId BELOW
     // the id we hold cannot have come from the process that gave us that id —
     // that is the tell. Forget the numbering and ask again from nothing.
-    if (typeof body.lastId === "number" && body.lastId < lastEventId) {
+    const otherProcess = typeof body.epoch === "string" && pollerEpoch !== null && body.epoch !== pollerEpoch;
+    if (typeof body.epoch === "string") pollerEpoch = body.epoch;
+    if (otherProcess || (typeof body.lastId === "number" && body.lastId < lastEventId)) {
       renderedEvents.clear();
       lastEventId = 0;
       if (retry) return catchUp(false);

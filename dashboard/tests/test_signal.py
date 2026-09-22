@@ -179,3 +179,45 @@ def test_the_signal_is_broadcast_on_a_tick_that_changes_nothing():
     assert last["type"] == "signal"
     peer = last["data"]["leaf1"][PEER]
     assert peer["hasDelta"] is True and peer["dRcvd"] == 8
+
+
+def test_a_quiet_tick_is_a_measured_zero_not_unmeasured():
+    """Equal counters ARE a measurement: nothing was said. Read as a reset
+    (`>` instead of `>=`) every idle session would show "unmeasured" on every
+    tick, which is the one word the Traffic view reserves for a reading it
+    did not take."""
+    s = sig(node(summary_with()), node(summary_with()))
+    assert s["hasDelta"] is True
+    assert (s["dRcvd"], s["dSent"], s["dPfxRcd"], s["dPfxSnt"]) == (0, 0, 0, 0)
+
+
+def test_the_delta_is_per_tick_even_when_the_signature_did_not_change():
+    """poll_all short-circuits when the signature is unchanged, and that path
+    has to advance last_state too: the signal is subtracted from the PREVIOUS
+    tick, not from the last tick that changed the topology. Otherwise a quiet
+    fabric's deltas grow every poll and every idle session reads as moving."""
+    import asyncio
+
+    sent: list[dict] = []
+
+    async def broadcast(message):
+        sent.append(message)
+
+    p = LabPoller.__new__(LabPoller)
+    p.broadcast = broadcast
+    p.nodes = [{"name": "leaf1", "asn": 65101}]
+    p.last_state, p.last_signature = {}, None
+    p.events, p.last_event_id = deque(maxlen=500), 0
+    ticks = [node(summary_with(msgRcvd=100, msgSent=100)),
+             node(summary_with(msgRcvd=104, msgSent=103)),
+             node(summary_with(msgRcvd=108, msgSent=106))]
+
+    async def drive():
+        for st in ticks:
+            p._poll_node_sync = lambda n, s=st: s["leaf1"]      # noqa: ARG005
+            await LabPoller.poll_all(p)
+
+    asyncio.run(drive())
+    signals = [m["data"]["leaf1"][PEER] for m in sent if m["type"] == "signal"]
+    assert [s["hasDelta"] for s in signals] == [False, True, True]
+    assert [(s["dRcvd"], s["dSent"]) for s in signals] == [(0, 0), (4, 3), (4, 3)]

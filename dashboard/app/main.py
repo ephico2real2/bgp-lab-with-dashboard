@@ -88,6 +88,7 @@ async def events(since: int = 0):
         return {"ready": False, "events": [], "lastId": 0}
     return {
         "ready": True,
+        "epoch": poller.epoch,
         "events": poller.events_since(since),
         "lastId": poller.last_event_id,
     }
