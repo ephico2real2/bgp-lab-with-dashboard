@@ -93,14 +93,33 @@ Topology nodes are discovered from the YAML at startup, so a dashboard restart i
 
 ```
 Browser ◄── WebSocket ── FastAPI ◄── docker.sock ──► FRR containers
-                          │
-                          └── 2 s polling loop ───┐
-                                                  ▼
+   ▲                      │
+   └── HTTP on load ──────┤
+       /api/state         └── 2 s polling loop ───┐
+       /api/events                                ▼
                           show ip bgp summary json
-                          show ip bgp json
+                          show ip bgp detail json      (detail: communities)
+                          show bgp neighbors json      (timers; non-fatal)
 ```
 
-The polling loop runs as an asyncio task. It diffs each new state against the previous one; if anything changed it broadcasts a state snapshot plus per-event messages (session-state-change and best-path-change). The browser keeps a copy of the latest state and re-renders the sidebar on click and on any update.
+The polling loop runs as an asyncio task and sends three kinds of frame:
+
+| frame | when | why |
+|---|---|---|
+| `snapshot` | on connect | the graph the page draws first |
+| `state` | when the SIGNATURE changes — the sessions or the best paths | re-sending 11 KB and re-laying out a steady fabric every 2 s is churn |
+| `signal` | **every tick** | what each session DID between two polls; a heartbeat that only beats on change is not a heartbeat |
+| `event` | per change | `session` (appeared / state / vanished), `route` (added / withdrawn), `bestpath` |
+
+Because `state` is sent only on a change, anything the page owes the reader
+*later* — the 30 s hold on a vanished edge — is a timer in the page, not a
+wait for the next frame.
+
+The page loads over HTTP first (`/api/state`, then `/api/events?since=0`) and
+only then opens the socket, so a slow or blocked WebSocket shows a drawn page
+rather than an empty one. Events carry monotonic ids and the process's
+`epoch`, which is what lets a reconnecting page ask for just the gap and draw
+a twice-delivered event once.
 
 ## Files
 
@@ -108,22 +127,34 @@ The polling loop runs as an asyncio task. It diffs each new state against the pr
 |---|---|
 | `Dockerfile` | python:3.12-slim base + FastAPI + docker SDK |
 | `requirements.txt` | pinned deps |
-| `app/main.py` | FastAPI app: `/`, `/api/state`, `/ws` |
+| `app/main.py` | FastAPI app: `/`, `/api/state`, `/api/events`, `/ws` |
 | `app/poller.py` | async polling, state diff, event generation |
 | `app/static/index.html` | shell layout |
 | `app/static/dashboard.js` | Cytoscape graph + WebSocket client |
 | `app/static/styles.css` | basic styling |
+| `tests/` | the poller's diff, the ring and the endpoint (pytest); the page's decisions, run in a `vm` under node |
 
 ## Extending
 
-- **Different lab**: set `LAB_PREFIX` env var (e.g., `LAB_PREFIX=clab-bgp-lab` for the original 6-node lab) and bind that lab's topology YAML to `/lab/topology.yml`.
-- **More polling fields**: add to `poller._poll_node_sync()` (e.g., `show ip route json`).
-- **Highlight best-path edges**: in `dashboard.js`, walk the BGP table for the selected node and add a CSS class to edges that match.
-- **Auto-refresh layout less aggressively**: the current `cose` layout reruns on every state diff which can jiggle nodes; switch to `preset` after the first build to keep positions stable.
+Environment:
+
+| var | default | what it does |
+|---|---|---|
+| `LAB_TOPOLOGY` | `/lab/topology.yml` | the containerlab YAML the node list is read from |
+| `LAB_PREFIX` | `clab-simple-lab` | container names are `<prefix>-<node>` |
+| `POLL_INTERVAL` | `2` | seconds between polls |
+| `EVENTS_RING` | `500` | events kept for a page that arrives late |
+
+- **Different lab**: set `LAB_PREFIX` (e.g. `LAB_PREFIX=clab-bgp-lab` for the original 6-node lab) and bind that lab's topology YAML to `/lab/topology.yml`.
+- **More polling fields**: add to `poller._poll_node_sync()` (e.g. `show ip route json`).
+- **Highlight best-path edges**: in `dashboard.js`, walk the BGP table for the selected node and add a class to the edges that match.
+
+The layout does NOT re-run on a diff — `updateGraph` patches data only, so a
+node you drag stays where you put it. "Reset layout" in the graph tools is
+what re-runs `cose` deliberately.
 
 ## Known limits (MVP)
 
-- Edge labels (CIDRs from clab YAML) aren't shown — only color-coded state. Easy to add.
 - "Best path" highlighting is in the table only, not on the graph yet.
 - No authentication. Run on a trusted network.
 - Container detection requires the docker socket; if SELinux/AppArmor on your host blocks it, mount with `:Z` or relax policy.
