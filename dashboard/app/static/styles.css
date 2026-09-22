@@ -26,6 +26,22 @@ header {
 
 header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* Quiet: it is provenance, not status. Monospace because it is a commit. */
+.build {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: #8b949e;
+  text-decoration: none;
+}
+.build:hover { color: #f6f8fa; text-decoration: underline; }
+.build-unknown { color: #d29922; }
+
 .status {
   font-size: 0.8rem;
   padding: 0.15rem 0.5rem;

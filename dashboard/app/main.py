@@ -75,6 +75,24 @@ async def state():
     return {"ready": True, "data": poller.last_state, "nodes": poller.nodes}
 
 
+@app.get("/api/version")
+async def version():
+    """Which build this is, for the page's own header.
+
+    The values are baked in at build time from the same argument that becomes
+    the image's OCI labels, so `docker inspect` and the page cannot disagree.
+    "unknown" is a real answer and the page says it plainly: it means this is
+    not a published build.
+    """
+    revision = os.environ.get("DASHBOARD_REVISION") or "unknown"
+    return {
+        "revision": revision,
+        "short": revision[:7] if revision != "unknown" else "unknown",
+        "built": os.environ.get("DASHBOARD_BUILT") or "unknown",
+        "source": "https://github.com/ephico2real2/bgp-lab-with-dashboard",
+    }
+
+
 @app.get("/api/events")
 async def events(since: int = 0):
     """What has happened, for a page that was not connected when it did.

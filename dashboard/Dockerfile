@@ -1,15 +1,22 @@
 FROM python:3.12-slim
 
-# What this image IS. The revision and the build time are passed at build time
-# by CI (`--label org.opencontainers.image.revision=...`), because a Dockerfile
-# cannot know the commit it is being built from — and without it nothing on a
-# running host can say which build it is holding. Measured on the published
-# image before this: `docker image inspect --format '{{json .Config.Labels}}'`
-# answered `null`, so the only way to identify a container was to compare its
-# served files with a checkout, byte for byte.
+# What this image IS, and which build it is. A Dockerfile cannot know the
+# commit it is being built from, so CI passes it — and it is passed ONCE, as a
+# build argument that becomes both the OCI label and the value the app serves
+# on /api/version. Two independent mechanisms for the same fact would be two
+# things to keep in step, and the first time they disagreed the page would be
+# confidently wrong about itself.
+ARG REVISION=unknown
+ARG BUILT=unknown
+
 LABEL org.opencontainers.image.title="bgp-dashboard" \
       org.opencontainers.image.description="Live BGP topology, events and traffic for the four-router lab" \
-      org.opencontainers.image.source="https://github.com/ephico2real2/bgp-lab-with-dashboard"
+      org.opencontainers.image.source="https://github.com/ephico2real2/bgp-lab-with-dashboard" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.created="$BUILT"
+
+ENV DASHBOARD_REVISION=$REVISION \
+    DASHBOARD_BUILT=$BUILT
 
 WORKDIR /app
 

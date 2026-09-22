@@ -16,6 +16,14 @@ POLL="${POLL:-2}"
 # healthy, and compose then refused the dashboard's dependency. One retry,
 # with the evidence printed first, so a repeat is diagnosable instead of a
 # bare "dependency failed to start".
+# A locally built dashboard can say which commit it came from too: the build
+# args become the image's labels and the value on /api/version. A tree with
+# uncommitted changes says so, because "9a52441" on a page built from a dirty
+# checkout would be a lie.
+REVISION="${REVISION:-$(git -C "$ROOT" describe --always --dirty --abbrev=40 2>/dev/null || echo unknown)}"
+BUILT="${BUILT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+export REVISION BUILT
+
 up_once() { compose up -d --wait --wait-timeout 120; }
 if ! up_once; then
   echo "--- the lab did not come up; state and logs of what failed ---" >&2
