@@ -148,7 +148,7 @@ clab version                               # clab binary works
 ## Lifecycle
 
 The dashboard image is published by this fork's CI as
-`quay.io/ephico2real/bgp-dashboard:sha-9a52441` (multi-arch: `linux/amd64` and
+`quay.io/ephico2real/bgp-dashboard:sha-65a3a48` (multi-arch: `linux/amd64` and
 `linux/arm64`), so the first `clab deploy` pulls it automatically. **No local
 build step is required.**
 
