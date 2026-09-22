@@ -66,6 +66,35 @@ curl -s 'http://<host>:8088/api/events?since=0'
 `since=<id>` returns only what follows that id, which is how the page catches
 up after a reconnect without drawing anything twice.
 
+## What this lab deliberately weakens
+
+Two defaults are turned off because a teaching lab needs them off. Both would
+be wrong to carry into production, so they are written down rather than left
+to be discovered.
+
+**RFC 8212 — `no bgp ebgp-requires-policy` on all four routers.** The standard
+makes an eBGP session advertise and accept nothing until an import and an
+export policy exist, and FRR implements it. With it in force every table in
+this topology would be empty until policies were written, which would make the
+first exercise — watching prefixes propagate — show nothing at all. Outside a
+lab, leave it on and write the policy: the default exists because a session
+that leaks a full table the moment it comes up has caused real outages. Each
+config says so at the line that disables it.
+
+**The dashboard is published on the loopback only.** It has no authentication
+and its container holds the Docker socket, so anyone who can reach the page
+can read every container on the host. `simple.clab.yml` binds `127.0.0.1:8088`
+and the compose file `127.0.0.1:${DASHBOARD_PORT}`. To reach it from another
+machine, say so deliberately:
+
+```bash
+DASHBOARD_BIND=0.0.0.0 docker compose -f compose/docker-compose.yml up -d
+```
+
+and put something in front of it that authenticates. The container itself
+listens on `0.0.0.0` — that is the container's own namespace, and the port
+publish is what decides who can reach it.
+
 ## Prerequisites (Linux)
 
 The lab runs on any modern Linux distro (tested on Ubuntu 22.04 / 24.04, Debian 12, x86_64). You need two things on the host: Docker and containerlab.
