@@ -18,5 +18,16 @@ FROM ${FRR_IMAGE}
 RUN apk add --no-cache python3
 
 COPY agent.py /usr/local/bin/frr-agent
+COPY agent-start.sh /usr/local/bin/frr-agent-start
 COPY start.sh /usr/local/bin/router-start
-RUN chmod 0755 /usr/local/bin/frr-agent /usr/local/bin/router-start
+RUN chmod 0755 /usr/local/bin/frr-agent /usr/local/bin/frr-agent-start \
+      /usr/local/bin/router-start
+
+# The default command, so that a caller who overrides nothing still gets the
+# agent. Inherited from the FRR image this was `/usr/lib/frr/docker-start`,
+# which starts FRR and nothing else: measured, `docker run -e
+# FRR_AGENT_ADDR=... frr-agent:local` produced tini, docker-start, watchfrr,
+# mgmtd, zebra, staticd — and no python3. The containerlab path sets no `cmd`,
+# so that was the containerlab path. ENTRYPOINT stays the image's tini, so
+# compose's `command: ["/ci/rename-ifaces.sh"]` still replaces this.
+CMD ["/usr/local/bin/router-start"]

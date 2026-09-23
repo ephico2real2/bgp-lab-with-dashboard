@@ -12,49 +12,61 @@ topology:
 
   nodes:
     companya:
-      # The FRR image plus the show-only agent, and a pinned management
-      # address so the agent can bind THAT and nothing else. A peer on a
-      # transit link has no path to it.
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
       image: quay.io/ephico2real/bgp-router-agent:develop
       mgmt-ipv4: 172.22.20.11
       env:
         FRR_AGENT_ADDR: 172.22.20.11:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/companya/frr.conf:/etc/frr/frr.conf
         - configs/companya/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     isp1:
-      # The FRR image plus the show-only agent, and a pinned management
-      # address so the agent can bind THAT and nothing else. A peer on a
-      # transit link has no path to it.
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
       image: quay.io/ephico2real/bgp-router-agent:develop
       mgmt-ipv4: 172.22.20.13
       env:
         FRR_AGENT_ADDR: 172.22.20.13:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/isp1/frr.conf:/etc/frr/frr.conf
         - configs/isp1/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     isp2:
-      # The FRR image plus the show-only agent, and a pinned management
-      # address so the agent can bind THAT and nothing else. A peer on a
-      # transit link has no path to it.
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
       image: quay.io/ephico2real/bgp-router-agent:develop
       mgmt-ipv4: 172.22.20.14
       env:
         FRR_AGENT_ADDR: 172.22.20.14:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/isp2/frr.conf:/etc/frr/frr.conf
         - configs/isp2/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     companyb:
-      # The FRR image plus the show-only agent, and a pinned management
-      # address so the agent can bind THAT and nothing else. A peer on a
-      # transit link has no path to it.
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
       image: quay.io/ephico2real/bgp-router-agent:develop
       mgmt-ipv4: 172.22.20.12
       env:
         FRR_AGENT_ADDR: 172.22.20.12:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/companyb/frr.conf:/etc/frr/frr.conf
         - configs/companyb/daemons:/etc/frr/daemons

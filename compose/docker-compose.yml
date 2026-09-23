@@ -36,7 +36,11 @@ x-router: &router
   sysctls:
     net.ipv4.ip_forward: "1"
   healthcheck:
-    test: ["CMD-SHELL", "vtysh -c 'show daemons' | grep -q bgpd"]
+    # Both halves of what this container is for. vtysh alone said nothing about
+    # the agent: measured, SIGSTOP on the agent left the container `healthy`
+    # and isp1 `unreachable` on /api/state, and watchfrr supervises
+    # `mgmtd zebra bgpd staticd` only.
+    test: ["CMD-SHELL", "vtysh -c 'show daemons' | grep -q bgpd && python3 -c \"import os,urllib.request; urllib.request.urlopen('http://'+os.environ['FRR_AGENT_ADDR']+'/healthz', timeout=2)\""]
     interval: 2s
     timeout: 3s
     retries: 20
@@ -48,10 +52,14 @@ services:
     container_name: clab-simple-lab-companya
     hostname: companya
     environment:
-      # Its OWN management address. Binding to that and nothing else is what
-      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
-      # to it, and there is no 0.0.0.0 default that could put one there.
+      # Its OWN management address — and, separately, who may ask. The bind
+      # address is NOT a boundary: measured on this lab, a container holding
+      # only the companya-isp1 interface (10.0.10.4/29), after one
+      # `ip route add 172.22.20.0/24 via 10.0.10.2`, read isp1's peer table
+      # from 172.22.20.13:8080. Linux accepts a packet for any local address
+      # on any interface. The allow-list below is what keeps a transit peer out.
       FRR_AGENT_ADDR: 172.22.20.11:8080
+      FRR_AGENT_ALLOW: 172.22.20.0/24
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/companya/frr.conf:/etc/frr/frr.conf:ro
@@ -70,10 +78,14 @@ services:
     container_name: clab-simple-lab-companyb
     hostname: companyb
     environment:
-      # Its OWN management address. Binding to that and nothing else is what
-      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
-      # to it, and there is no 0.0.0.0 default that could put one there.
+      # Its OWN management address — and, separately, who may ask. The bind
+      # address is NOT a boundary: measured on this lab, a container holding
+      # only the companya-isp1 interface (10.0.10.4/29), after one
+      # `ip route add 172.22.20.0/24 via 10.0.10.2`, read isp1's peer table
+      # from 172.22.20.13:8080. Linux accepts a packet for any local address
+      # on any interface. The allow-list below is what keeps a transit peer out.
       FRR_AGENT_ADDR: 172.22.20.12:8080
+      FRR_AGENT_ALLOW: 172.22.20.0/24
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/companyb/frr.conf:/etc/frr/frr.conf:ro
@@ -92,10 +104,14 @@ services:
     container_name: clab-simple-lab-isp1
     hostname: isp1
     environment:
-      # Its OWN management address. Binding to that and nothing else is what
-      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
-      # to it, and there is no 0.0.0.0 default that could put one there.
+      # Its OWN management address — and, separately, who may ask. The bind
+      # address is NOT a boundary: measured on this lab, a container holding
+      # only the companya-isp1 interface (10.0.10.4/29), after one
+      # `ip route add 172.22.20.0/24 via 10.0.10.2`, read isp1's peer table
+      # from 172.22.20.13:8080. Linux accepts a packet for any local address
+      # on any interface. The allow-list below is what keeps a transit peer out.
       FRR_AGENT_ADDR: 172.22.20.13:8080
+      FRR_AGENT_ALLOW: 172.22.20.0/24
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/isp1/frr.conf:/etc/frr/frr.conf:ro
@@ -116,10 +132,14 @@ services:
     container_name: clab-simple-lab-isp2
     hostname: isp2
     environment:
-      # Its OWN management address. Binding to that and nothing else is what
-      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
-      # to it, and there is no 0.0.0.0 default that could put one there.
+      # Its OWN management address — and, separately, who may ask. The bind
+      # address is NOT a boundary: measured on this lab, a container holding
+      # only the companya-isp1 interface (10.0.10.4/29), after one
+      # `ip route add 172.22.20.0/24 via 10.0.10.2`, read isp1's peer table
+      # from 172.22.20.13:8080. Linux accepts a packet for any local address
+      # on any interface. The allow-list below is what keeps a transit peer out.
       FRR_AGENT_ADDR: 172.22.20.14:8080
+      FRR_AGENT_ALLOW: 172.22.20.0/24
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/isp2/frr.conf:/etc/frr/frr.conf:ro
@@ -170,10 +190,11 @@ services:
       # 8088 (simple.clab.yml), and a second lab on the same Docker host that wants
       # the same port takes the first one down. Set DASHBOARD_PORT=8088 to match the
       # containerlab path when nothing else is running.
-      # DASHBOARD_BIND is the deliberate step out of the loopback. The page
-      # has no authentication and the container holds the Docker socket, so
-      # the default keeps it on this host and exposing it further has to be
-      # something someone typed.
+      # DASHBOARD_BIND is the deliberate step out of the loopback. The page has
+      # no authentication, so the default keeps it on this host and exposing it
+      # further has to be something someone typed. (It no longer holds the
+      # Docker socket — that is the whole point of router-agent/ — but an
+      # unauthenticated page is reason enough on its own.)
       - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8089}:8080"
     networks:
       mgmt:

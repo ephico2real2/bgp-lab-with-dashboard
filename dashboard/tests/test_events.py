@@ -222,13 +222,10 @@ def test_broadcast_events_carry_their_id(bare_poller):
 
 # ---- the ring is the size it was configured to be -------------------------
 
-def test_init_sizes_the_ring_from_its_argument(tmp_path, monkeypatch):
+def test_init_sizes_the_ring_from_its_argument(tmp_path):
     """The hand-built pollers above set maxlen themselves, so none of them can
     see a constructor that forgot it. Measured: with `deque()` in __init__ and
     no maxlen, every test above still passed while the ring grew for ever."""
-    import docker
-
-    monkeypatch.setattr(docker, "from_env", lambda **kw: object())
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    leaf1: {}\n")
 
@@ -393,10 +390,9 @@ def test_the_endpoint_names_the_process_that_issued_the_ids(tmp_path, monkeypatc
     Two pollers name themselves differently; one names itself the same way
     on every call."""
     import asyncio
-    import docker
+
     import main
 
-    monkeypatch.setattr(docker, "from_env", lambda **kw: object())
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    leaf1: {}\n")
     first = LabPoller(topology_path=topology, lab_prefix="clab-x", broadcast=None)
