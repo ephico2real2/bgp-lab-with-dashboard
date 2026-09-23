@@ -17,12 +17,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      # NOTE: this repository is currently PRIVATE on quay.io (quay creates a
-      # new repository private by default), so `clab deploy` will fail to pull
-      # it with `unauthorized` until it is made public. The compose path builds
-      # the same image locally and is unaffected:
-      #   docker compose -f compose/docker-compose.yml up -d --build
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.11
       env:
         FRR_AGENT_ADDR: 172.22.20.11:8080
@@ -37,12 +32,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      # NOTE: this repository is currently PRIVATE on quay.io (quay creates a
-      # new repository private by default), so `clab deploy` will fail to pull
-      # it with `unauthorized` until it is made public. The compose path builds
-      # the same image locally and is unaffected:
-      #   docker compose -f compose/docker-compose.yml up -d --build
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.13
       env:
         FRR_AGENT_ADDR: 172.22.20.13:8080
@@ -57,12 +47,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      # NOTE: this repository is currently PRIVATE on quay.io (quay creates a
-      # new repository private by default), so `clab deploy` will fail to pull
-      # it with `unauthorized` until it is made public. The compose path builds
-      # the same image locally and is unaffected:
-      #   docker compose -f compose/docker-compose.yml up -d --build
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.14
       env:
         FRR_AGENT_ADDR: 172.22.20.14:8080
@@ -77,12 +62,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      # NOTE: this repository is currently PRIVATE on quay.io (quay creates a
-      # new repository private by default), so `clab deploy` will fail to pull
-      # it with `unauthorized` until it is made public. The compose path builds
-      # the same image locally and is unaffected:
-      #   docker compose -f compose/docker-compose.yml up -d --build
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.12
       env:
         FRR_AGENT_ADDR: 172.22.20.12:8080
