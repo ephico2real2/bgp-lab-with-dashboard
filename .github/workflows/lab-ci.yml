@@ -232,14 +232,31 @@ jobs:
             git worktree prune
             if git "${extra[@]}" ls-remote --exit-code --heads origin ci-captures >/dev/null 2>&1; then
               git "${extra[@]}" fetch -q origin ci-captures
-              git worktree add -q .tmp/cap origin/ci-captures
+              # --detach at the REMOTE tip, and no `-q`, so a failure here is
+              # visible. Run 35873351788 lost the race on attempt 1 and then
+              # reported "Not currently on any branch / nothing to commit" on
+              # attempts 2-5 — which is what `cd .tmp/cap` does when the
+              # worktree was NOT created and the subshell runs in the main
+              # checkout instead, where `.tmp` is ignored. The cause of that
+              # add failing was never established: two local harnesses
+              # reproduced the race but not the symptom. So this does not
+              # claim a diagnosis — it removes the silence, pins the tip
+              # explicitly, and clears a stale local branch that would make
+              # `add` refuse.
+              git branch -D ci-captures >/dev/null 2>&1 || true
+              if ! git worktree add --detach .tmp/cap origin/ci-captures; then
+                echo "captures: could not create the .tmp/cap worktree" >&2
+                return 1
+              fi
             else
               git worktree add -q --detach .tmp/cap
               (cd .tmp/cap && git checkout -q --orphan ci-captures && git rm -rfq . >/dev/null 2>&1 || true)
             fi
             mkdir -p ".tmp/cap/${DIR}"
             cp "$OUT"/*.png ci/out/walk.log ".tmp/cap/${DIR}/" 2>/dev/null || cp "$OUT"/*.png ".tmp/cap/${DIR}/"
-            (cd .tmp/cap && git add -A && git commit -qm "captures: ${DIR}" \
+            (cd .tmp/cap && git add -A \
+              && { git diff --cached --quiet && { echo "captures: nothing staged for ${DIR} — the copy produced no change" >&2; exit 1; } || true; } \
+              && git commit -qm "captures: ${DIR}" \
               && git "${extra[@]}" push -q origin "HEAD:ci-captures")
           }
           pushed=no
