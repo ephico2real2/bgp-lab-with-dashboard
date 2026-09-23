@@ -30,9 +30,8 @@ nodes:
       LAB_TOPOLOGY: /lab/topology.yml
       LAB_PREFIX: clab-simple-lab
     binds:
-      - /var/run/docker.sock:/var/run/docker.sock    # to docker exec into peers
-      - simple.clab.yml:/lab/topology.yml:ro         # so poller knows the nodes
-      - configs:/lab/configs:ro                      # to extract AS numbers from frr.conf
+      - simple.clab.yml:/lab/topology.yml:ro         # the router names
+      - configs:/lab/configs:ro                      # the configs, for reference
 ```
 
 So `sudo clab deploy -t simple.clab.yml` brings up all 5 containers (4 routers + dashboard) in one shot. `sudo clab destroy -t simple.clab.yml` tears all 5 down.
@@ -64,7 +63,7 @@ sudo docker run -d --name clab-simple-lab-dashboard \
   --network clab \
   -p 8088:8080 \
   -e LAB_PREFIX=clab-simple-lab \
-  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e ROUTERS="companya=http://172.22.20.11:8080,companyb=http://172.22.20.12:8080,isp1=http://172.22.20.13:8080,isp2=http://172.22.20.14:8080" \
   -v simple.clab.yml:/lab/topology.yml:ro \
   -v /configs:/lab/configs:ro \
   bgp-dashboard:latest
@@ -81,18 +80,19 @@ sudo docker run -d --name bgp-dashboard \
   --network clab \
   -p 8088:8080 \
   -e LAB_PREFIX=clab-bgp-lab \
-  -v /var/run/docker.sock:/var/run/docker.sock \
   -v /home/pc/bgp/bgp-lab.clab.yml:/lab/topology.yml:ro \
   -v /home/pc/bgp/configs:/lab/configs:ro \
   bgp-dashboard:latest
 ```
 
-Routers are discovered from Docker on every poll — containers named `<LAB_PREFIX>-<node>` — so a router added to or removed from the lab appears or goes without restarting the dashboard. The topology YAML is optional and decides only the ORDER they are listed in; the AS and the router-id are read from each router's own `show ip bgp summary json`.
+The dashboard holds **no Docker socket**. Each router runs a show-only agent (`router-agent/`) on the management LAN and the dashboard reads it over HTTP: five `show` commands behind a fixed allow-list, where it used to have `docker exec` into any container on the host.
+
+`ROUTERS` names the routers and where their agents answer. Without it the topology file supplies the names and the address is the node's name on the management network — re-read every poll, so a router added to the file still appears without a restart. Losing the socket costs live *container* discovery: nothing can enumerate what is running without it, so the routers are configuration. The AS and the router-id are still read from each router's own `show ip bgp summary json`.
 
 ## How it works
 
 ```
-Browser ◄── WebSocket ── FastAPI ◄── docker.sock ──► FRR containers
+Browser ◄── WebSocket ── FastAPI ──HTTP──► frr-agent (management LAN)
    ▲                      │
    └── HTTP on load ──────┤
        /api/state         └── 2 s polling loop ───┐
@@ -145,6 +145,8 @@ Environment:
 
 | var | default | what it does |
 |---|---|---|
+| `ROUTERS` | (unset) | `name=url,…` — where each router's agent answers |
+| `ROUTER_AGENT_PORT` | `8080` | the port, when the names come from the topology file |
 | `DASHBOARD_REVISION` | `unknown` | baked in at build time; shown in the header |
 | `DASHBOARD_BUILT` | `unknown` | baked in at build time; the tooltip's build date |
 | `LAB_TOPOLOGY` | `/lab/topology.yml` | the containerlab YAML the node list is read from |
@@ -164,4 +166,4 @@ what re-runs `cose` deliberately.
 
 - "Best path" highlighting is in the table only, not on the graph yet.
 - No authentication. Run on a trusted network.
-- Container detection requires the docker socket; if SELinux/AppArmor on your host blocks it, mount with `:Z` or relax policy.
+- No authentication on the agents either: the management network is the boundary. What is behind it is five read-only commands, not the host.

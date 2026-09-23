@@ -139,5 +139,19 @@ if ! ip link show eth0 >/dev/null 2>&1; then
   fi
 fi
 
-echo "rename-ifaces: done, exec docker-start"
+echo "rename-ifaces: done"
+
+# The show-only agent starts HERE, after the rename and before FRR takes the
+# foreground: it binds the management address, which only exists once eth0 is
+# the management interface. The launch itself — the privilege drop, the
+# management-only firewall rule and the supervision — lives in one script that
+# the containerlab path (the image's CMD) calls too, because a security
+# property that only one of the two start-up paths applies is not a property.
+if [ -x /usr/local/bin/frr-agent-start ]; then
+  /usr/local/bin/frr-agent-start || echo "rename-ifaces: agent start returned $?" >&2
+else
+  echo "rename-ifaces: no /usr/local/bin/frr-agent-start; starting FRR with NO agent" >&2
+fi
+
+echo "rename-ifaces: exec docker-start"
 exec /usr/lib/frr/docker-start

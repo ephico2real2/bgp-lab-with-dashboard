@@ -12,21 +12,61 @@ topology:
 
   nodes:
     companya:
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
+      image: quay.io/ephico2real/bgp-router-agent:develop
+      mgmt-ipv4: 172.22.20.11
+      env:
+        FRR_AGENT_ADDR: 172.22.20.11:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/companya/frr.conf:/etc/frr/frr.conf
         - configs/companya/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     isp1:
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
+      image: quay.io/ephico2real/bgp-router-agent:develop
+      mgmt-ipv4: 172.22.20.13
+      env:
+        FRR_AGENT_ADDR: 172.22.20.13:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/isp1/frr.conf:/etc/frr/frr.conf
         - configs/isp1/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     isp2:
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
+      image: quay.io/ephico2real/bgp-router-agent:develop
+      mgmt-ipv4: 172.22.20.14
+      env:
+        FRR_AGENT_ADDR: 172.22.20.14:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/isp2/frr.conf:/etc/frr/frr.conf
         - configs/isp2/daemons:/etc/frr/daemons
         - configs/vtysh.conf:/etc/frr/vtysh.conf
     companyb:
+      # The FRR image plus the show-only agent: a pinned management address to
+      # bind, and the networks that may ask. Both are needed — measured, a host
+      # holding only a transit-link interface reached the agent on its
+      # management address after one `ip route add`, because Linux accepts a
+      # packet for any local address on any interface.
+      image: quay.io/ephico2real/bgp-router-agent:develop
+      mgmt-ipv4: 172.22.20.12
+      env:
+        FRR_AGENT_ADDR: 172.22.20.12:8080
+        FRR_AGENT_ALLOW: 172.22.20.0/24
       binds:
         - configs/companyb/frr.conf:/etc/frr/frr.conf
         - configs/companyb/daemons:/etc/frr/daemons
@@ -44,17 +84,23 @@ topology:
       image: quay.io/ephico2real/bgp-dashboard:sha-9a52441
       image-pull-policy: IfNotPresent   # use cached image after first pull
       ports:
-        # Loopback only. `8088:8080` publishes on every interface the host has,
-        # so a dashboard with no authentication — it holds the Docker socket —
-        # was reachable from the network the moment the lab came up.
+        # Loopback only. `8088:8080` publishes on every interface the host
+        # has, so a dashboard with no authentication was reachable from the
+        # network the moment the lab came up.
         # compose/docker-compose.yml already does this; this is the
         # containerlab path.
         - 127.0.0.1:8088:8080
       env:
         LAB_TOPOLOGY: /lab/topology.yml
         LAB_PREFIX: clab-simple-lab
+        # The management addresses above. No Docker socket: the dashboard
+        # reads five `show` commands over HTTP instead of holding the host.
+        ROUTERS: >-
+          companya=http://172.22.20.11:8080,
+          companyb=http://172.22.20.12:8080,
+          isp1=http://172.22.20.13:8080,
+          isp2=http://172.22.20.14:8080
       binds:
-        - /var/run/docker.sock:/var/run/docker.sock
         - simple.clab.yml:/lab/topology.yml:ro
         - configs:/lab/configs:ro
 

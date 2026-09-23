@@ -222,13 +222,10 @@ def test_broadcast_events_carry_their_id(bare_poller):
 
 # ---- the ring is the size it was configured to be -------------------------
 
-def test_init_sizes_the_ring_from_its_argument(tmp_path, monkeypatch):
+def test_init_sizes_the_ring_from_its_argument(tmp_path):
     """The hand-built pollers above set maxlen themselves, so none of them can
     see a constructor that forgot it. Measured: with `deque()` in __init__ and
     no maxlen, every test above still passed while the ring grew for ever."""
-    import docker
-
-    monkeypatch.setattr(docker, "from_env", lambda **kw: object())
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    leaf1: {}\n")
 
@@ -393,10 +390,9 @@ def test_the_endpoint_names_the_process_that_issued_the_ids(tmp_path, monkeypatc
     Two pollers name themselves differently; one names itself the same way
     on every call."""
     import asyncio
-    import docker
+
     import main
 
-    monkeypatch.setattr(docker, "from_env", lambda **kw: object())
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    leaf1: {}\n")
     first = LabPoller(topology_path=topology, lab_prefix="clab-x", broadcast=None)
@@ -428,61 +424,51 @@ def test_api_state_carries_the_nodes_the_page_draws(monkeypatch):
 
 # ---- the inventory: what is running, ordered by the file -------------------
 
-class FakeContainer:
-    def __init__(self, name):
-        self.name = name
+def test_the_inventory_is_the_routers_we_have_an_address_for(bare_poller, tmp_path, monkeypatch):
+    """Losing the Docker socket costs live container discovery: nothing can
+    enumerate what is running without it, so the routers are configuration.
+    ROUTERS names them and where their agents answer."""
+    monkeypatch.setenv("ROUTERS", "isp1=http://172.22.20.13:8080, companya=http://172.22.20.11:8080")
+    p = bare_poller(topology_path=tmp_path / "none.yml", _agent_urls=None)
+    assert sorted(n["name"] for n in p._load_nodes()) == ["companya", "isp1"]
+    assert p._agents()["isp1"] == "http://172.22.20.13:8080"
 
 
-def test_the_inventory_is_what_is_running_not_what_the_file_says(bare_poller, tmp_path):
-    """A node added after start-up used to stay invisible until someone
-    restarted the dashboard — the README stated it as a limitation."""
+def test_a_trailing_slash_does_not_become_a_double_slash(bare_poller, tmp_path, monkeypatch):
+    monkeypatch.setenv("ROUTERS", "isp1=http://172.22.20.13:8080/")
+    p = bare_poller(topology_path=tmp_path / "none.yml", _agent_urls=None)
+    assert p._agents()["isp1"] == "http://172.22.20.13:8080"
+
+
+def test_without_routers_the_topology_file_names_them(bare_poller, tmp_path, monkeypatch):
+    """Compose and containerlab both give a node its name on the management
+    network, so the file's names are addresses."""
+    monkeypatch.delenv("ROUTERS", raising=False)
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    isp1: {}\n    companya: {}\n    dashboard: {}\n")
-    p = bare_poller(topology_path=topology)
-
-    class Client:
-        names = ["clab-test-isp1", "clab-test-companya", "clab-test-dashboard"]
-
-        class containers:
-            @staticmethod
-            def list(filters=None):
-                return [FakeContainer(n) for n in Client.names]
-
-    p.client = Client
+    p = bare_poller(topology_path=topology, _agent_urls=None)
     assert [n["name"] for n in p._load_nodes()] == ["isp1", "companya"], "file order, dashboard dropped"
-
-    # a router joins the lab
-    Client.names.append("clab-test-leaf9")
-    assert [n["name"] for n in p._load_nodes()] == ["isp1", "companya", "leaf9"], (
-        "a container the file never mentioned is still a router to poll")
-
-    # and leaves again
-    Client.names.remove("clab-test-isp1")
-    assert [n["name"] for n in p._load_nodes()] == ["companya", "leaf9"]
+    assert p._agents()["isp1"] == "http://isp1:8080"
 
 
-def test_the_topology_file_is_optional(bare_poller, tmp_path):
-    """It is a presentation preference — which router a reader sees first —
-    not the inventory."""
-    p = bare_poller(topology_path=tmp_path / "nothing-here.yml")
-
-    class Client:
-        class containers:
-            @staticmethod
-            def list(filters=None):
-                return [FakeContainer("clab-test-zebra"), FakeContainer("clab-test-alpha")]
-
-    p.client = Client
-    assert [n["name"] for n in p._load_nodes()] == ["alpha", "zebra"], "no file: ordered by name"
-
-
-def test_a_lab_that_is_not_up_yet_still_draws_its_topology(bare_poller, tmp_path):
-    """Discovery answers nothing before the containers start. The file is what
-    is left, and a graph with no data beats no graph at all."""
+def test_a_router_added_to_the_topology_file_appears_without_a_restart(bare_poller, tmp_path, monkeypatch):
+    """As much of the live inventory as survives losing the socket: the file
+    is mounted, so it is re-read rather than cached."""
+    monkeypatch.delenv("ROUTERS", raising=False)
     topology = tmp_path / "topology.yml"
-    topology.write_text("topology:\n  nodes:\n    isp1: {}\n    dashboard: {}\n")
-    p = bare_poller(topology_path=topology)          # client is None → discovery fails
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n")
+    p = bare_poller(topology_path=topology, _agent_urls=None)
     assert [n["name"] for n in p._load_nodes()] == ["isp1"]
+
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n    leaf9: {}\n")
+    assert [n["name"] for n in p._load_nodes()] == ["isp1", "leaf9"]
+
+
+def test_a_lab_with_no_file_and_no_routers_polls_nothing(bare_poller, tmp_path, monkeypatch):
+    """And says so by having no nodes, rather than inventing one."""
+    monkeypatch.delenv("ROUTERS", raising=False)
+    p = bare_poller(topology_path=tmp_path / "none.yml", _agent_urls=None)
+    assert p._load_nodes() == []
 
 
 def test_the_asn_is_no_longer_guessed_from_a_config_file():
@@ -514,42 +500,38 @@ def test_the_asn_is_no_longer_guessed_from_a_config_file():
         f"the poller regex-parses router config again: {patterns}")
 
 
-def test_a_router_that_joins_mid_run_is_polled_without_a_restart(bare_poller, tmp_path):
+def test_a_router_that_joins_mid_run_is_polled_without_a_restart(bare_poller, tmp_path, monkeypatch):
     """`_load_nodes` answering correctly is not the same as anything CALLING
     it again. Measured: removing the re-read from poll_all left every
-    discovery test passing while the dashboard went back to needing a restart.
+    inventory test passing while the dashboard went back to needing a restart.
+
+    This is as much of the live inventory as survives losing the Docker
+    socket: the topology file is mounted, so it is re-read rather than cached.
     """
     import asyncio
 
+    monkeypatch.delenv("ROUTERS", raising=False)
     topology = tmp_path / "topology.yml"
     topology.write_text("topology:\n  nodes:\n    isp1: {}\n")
-
-    class Client:
-        names = ["clab-test-isp1"]
-
-        class containers:
-            @staticmethod
-            def list(filters=None):
-                return [FakeContainer(n) for n in Client.names]
 
     sent: list[dict] = []
 
     async def broadcast(message):
         sent.append(message)
 
-    p = bare_poller(broadcast=broadcast, topology_path=topology, client=Client,
+    p = bare_poller(broadcast=broadcast, topology_path=topology, _agent_urls=None,
                     nodes=[{"name": "isp1", "asn": None}])
     p._poll_node_sync = lambda n: node({"10.0.0.1": peer()})      # noqa: ARG005
 
     asyncio.run(LabPoller.poll_all(p))
     assert [n["name"] for n in p.nodes] == ["isp1"]
 
-    Client.names.append("clab-test-leaf9")
+    topology.write_text("topology:\n  nodes:\n    isp1: {}\n    leaf9: {}\n")
     asyncio.run(LabPoller.poll_all(p))
     assert [n["name"] for n in p.nodes] == ["isp1", "leaf9"], (
         "the new router is not being polled — the inventory was read once at start-up")
-    assert "leaf9" in (sent[-1]["data"] if sent else {}) or any(
-        "leaf9" in (m.get("data") or {}) for m in sent), "and its state never reached the page"
+    assert any("leaf9" in (m.get("data") or {}) for m in sent), (
+        "and its state never reached the page")
 
 
 def test_the_node_list_carries_what_each_router_reported(bare_poller, tmp_path):
