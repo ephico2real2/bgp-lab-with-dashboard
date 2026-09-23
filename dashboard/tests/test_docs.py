@@ -17,8 +17,18 @@ MAIN = (APP / "main.py").read_text()
 POLLER = (APP / "poller.py").read_text()
 
 
+AGENT = (Path(__file__).resolve().parents[2] / "router-agent" / "agent.py").read_text()
+
+
 def code_commands() -> set[str]:
-    return set(re.findall(r'_exec_json\(container, "([^"]+)"\)', POLLER))
+    """What actually runs on a router. The poller no longer runs anything: it
+    asks a named VIEW of the show-only agent over HTTP, and the agent's
+    allow-list is the only place a command string exists."""
+    views = set(re.findall(r'_get_json\(base, "([^"]+)"\)', POLLER))
+    allowed = dict(re.findall(r'"([a-z0-9-]+)":\s*"(show [^"]+)"', AGENT))
+    missing = views - set(allowed)
+    assert not missing, f"the poller asks for views the agent does not serve: {missing}"
+    return {allowed[v] for v in views}
 
 
 def doc_commands() -> set[str]:
@@ -30,7 +40,11 @@ def code_endpoints() -> set[str]:
 
 
 def code_env() -> set[str]:
-    return set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', MAIN))
+    """Both files. The app reads its own settings in main.py and the poller
+    reads where the routers are — a guard that looked only at main.py passed
+    while ROUTERS, the variable this whole architecture turns on, was
+    undocumented."""
+    return set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', MAIN + POLLER))
 
 
 def code_frames() -> set[str]:
@@ -83,3 +97,29 @@ def test_the_doc_does_not_claim_the_layout_re_runs():
     assert update and "layout(" not in update.group(1), (
         "updateGraph runs a layout now — the README says it does not")
     assert "reruns on every state diff" not in README
+
+
+def test_nothing_still_tells_a_reader_to_mount_the_docker_socket():
+    """The socket is gone from every path — compose, containerlab and the two
+    `docker run` examples. A doc that still mounts it would hand a reader the
+    whole host for a dashboard that no longer uses it."""
+    root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for name in ("README.md", "dashboard/README.md", "simple.clab.yml",
+                 "compose/docker-compose.yml", "router-agent/README.md"):
+        for n, line in enumerate((root / name).read_text().splitlines(), 1):
+            if "docker.sock" not in line:
+                continue
+            # Saying what was REMOVED is the point of the change; mounting it
+            # is not. A line that binds it has a colon-separated path pair.
+            if re.search(r"/var/run/docker\.sock:/var/run/docker\.sock", line):
+                offenders.append(f"{name}:{n}: {line.strip()[:70]}")
+    assert not offenders, offenders
+
+
+def test_the_poller_cannot_reach_docker_at_all():
+    """Not a comment about not using it — the import and the dependency are
+    gone, so there is nothing to reach for."""
+    root = Path(__file__).resolve().parents[2]
+    assert "import docker" not in POLLER
+    assert "docker" not in (root / "dashboard" / "requirements.txt").read_text()

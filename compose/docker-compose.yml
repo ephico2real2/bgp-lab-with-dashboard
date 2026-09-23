@@ -20,7 +20,14 @@
 name: simple-lab
 
 x-router: &router
-  image: ${FRR_IMAGE:-quay.io/frrouting/frr:10.7.1}
+  # The FRR image plus a show-only agent on the management LAN. The dashboard
+  # reads these over HTTP; it no longer holds the host's Docker socket.
+  image: ${ROUTER_IMAGE:-frr-agent:local}
+  build:
+    context: ../router-agent
+    dockerfile: Containerfile
+    args:
+      FRR_IMAGE: ${FRR_IMAGE:-quay.io/frrouting/frr:10.7.1}
   command: ["/ci/rename-ifaces.sh"]
   cap_add:
     - NET_ADMIN
@@ -40,6 +47,11 @@ services:
     <<: *router
     container_name: clab-simple-lab-companya
     hostname: companya
+    environment:
+      # Its OWN management address. Binding to that and nothing else is what
+      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
+      # to it, and there is no 0.0.0.0 default that could put one there.
+      FRR_AGENT_ADDR: 172.22.20.11:8080
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/companya/frr.conf:/etc/frr/frr.conf:ro
@@ -57,6 +69,11 @@ services:
     <<: *router
     container_name: clab-simple-lab-companyb
     hostname: companyb
+    environment:
+      # Its OWN management address. Binding to that and nothing else is what
+      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
+      # to it, and there is no 0.0.0.0 default that could put one there.
+      FRR_AGENT_ADDR: 172.22.20.12:8080
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/companyb/frr.conf:/etc/frr/frr.conf:ro
@@ -74,6 +91,11 @@ services:
     <<: *router
     container_name: clab-simple-lab-isp1
     hostname: isp1
+    environment:
+      # Its OWN management address. Binding to that and nothing else is what
+      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
+      # to it, and there is no 0.0.0.0 default that could put one there.
+      FRR_AGENT_ADDR: 172.22.20.13:8080
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/isp1/frr.conf:/etc/frr/frr.conf:ro
@@ -93,6 +115,11 @@ services:
     <<: *router
     container_name: clab-simple-lab-isp2
     hostname: isp2
+    environment:
+      # Its OWN management address. Binding to that and nothing else is what
+      # keeps the agent off the transit links: a peer on 10.0.x.x has no path
+      # to it, and there is no 0.0.0.0 default that could put one there.
+      FRR_AGENT_ADDR: 172.22.20.14:8080
     volumes:
       - ../ci/rename-ifaces.sh:/ci/rename-ifaces.sh:ro
       - ../configs/isp2/frr.conf:/etc/frr/frr.conf:ro
@@ -124,8 +151,18 @@ services:
     environment:
       LAB_TOPOLOGY: /lab/topology.yml
       LAB_PREFIX: clab-simple-lab
+      # Where each router's agent answers, on the management network. These
+      # are the mgmt addresses below, not the data-plane ones: the dashboard
+      # has no route to a transit link and does not need one.
+      ROUTERS: >-
+        companya=http://172.22.20.11:8080,
+        companyb=http://172.22.20.12:8080,
+        isp1=http://172.22.20.13:8080,
+        isp2=http://172.22.20.14:8080
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # No Docker socket. It used to be mounted here so the poller could
+      # `docker exec` into each router — the whole host, handed to a web app
+      # with no authentication, to read five `show` commands.
       - ../simple.clab.yml:/lab/topology.yml:ro
       - ../configs:/lab/configs:ro
     ports:

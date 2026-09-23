@@ -28,9 +28,11 @@ def bare_poller():
         p.events = deque(maxlen=500)
         p.last_event_id = 0
         p.epoch = "epoch-a"
-        # Discovery has to fail harmlessly: no client, and a path that is not
-        # a topology file. poll_all then keeps whatever `nodes` the test set.
-        p.client = None
+        # No Docker client: the poller reads its routers over HTTP from their
+        # show-only agents. An empty agent map and a path that is not a
+        # topology file mean discovery finds nothing, so poll_all keeps
+        # whatever `nodes` the test set.
+        p._agent_urls = {}
         p.lab_prefix = "clab-test"
         p.topology_path = Path("/nonexistent/topology.yml")
         p.interval = 0

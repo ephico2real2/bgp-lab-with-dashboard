@@ -1,13 +1,15 @@
 import asyncio
 import json
+import os
 import re
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-import docker
 import yaml
 
 
@@ -25,12 +27,19 @@ class LabPoller:
         self.lab_prefix = lab_prefix
         self.broadcast = broadcast
         self.interval = interval
-        # A vtysh that never returns otherwise blocks its worker thread for
-        # ever: exec_run is two HTTP calls to the daemon, and without a timeout
-        # the read on exec_start has no deadline. One wedged router then stalls
-        # every poll, because poll_all gathers all of them.
-        self.client = docker.from_env(timeout=exec_timeout)
+        # No Docker client. This used to be `docker.from_env()` and every read
+        # was `docker exec <container> vtysh -c '<command>'`, which required
+        # the host's socket inside a web app with no authentication — the whole
+        # host, to read five `show` commands. Each router runs a show-only
+        # agent on the management LAN instead, and this is an HTTP client.
+        #
+        # The timeout still matters for the same reason it did: one wedged
+        # router must not stall every poll, because poll_all gathers them all.
         self.exec_timeout = exec_timeout
+        # Before _load_nodes(), which asks for it: the inventory IS the agent
+        # map now, so building it second meant asking an attribute that did not
+        # exist yet. The container exited on startup with AttributeError.
+        self._agent_urls: dict[str, str] | None = None
         self.nodes: list[dict[str, Any]] = self._load_nodes()
         self.last_state: dict[str, dict[str, Any]] = {}
         self.last_signature: Any = None
@@ -79,19 +88,39 @@ class LabPoller:
         return [known.get(name) or {"name": name, "asn": None} for name in ordered]
 
     def _running_nodes(self) -> set[str]:
-        """Container names under this lab's prefix, minus the dashboard."""
-        try:
-            containers = self.client.containers.list(
-                filters={"name": f"^/?{re.escape(self.lab_prefix)}-"})
-        except Exception as exc:                       # docker unreachable
-            print(f"[poller] container discovery failed: {exc}")
-            return set()
-        out = set()
-        for c in containers:
-            name = (c.name or "").removeprefix(f"{self.lab_prefix}-")
-            if name and name != "dashboard":
-                out.add(name)
-        return out
+        """The routers this dashboard has an address for.
+
+        Live container discovery is gone with the Docker socket, and that is
+        the trade this design makes: without the host's socket there is no way
+        to enumerate what is running, so the routers are configuration. ROUTERS
+        names them and where to reach them; the topology file supplies the
+        names when it does not, and the address is then the node's name on the
+        management network, which is what Compose and containerlab both give.
+        """
+        return set(self._agents())
+
+    def _agents(self) -> dict[str, str]:
+        """name -> base URL of that router's show-only agent."""
+        if self._agent_urls is None:
+            out: dict[str, str] = {}
+            for part in (os.environ.get("ROUTERS") or "").split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                name, _, url = part.partition("=")
+                name, url = name.strip(), url.strip()
+                if name and url:
+                    out[name] = url.rstrip("/")
+            self._agent_urls = out                 # env is fixed for the process
+        if self._agent_urls:
+            return self._agent_urls
+        # No ROUTERS: the topology file names them and the address is the
+        # node's name on the management network, which Compose and containerlab
+        # both provide. Re-read every time rather than cached — the file is
+        # mounted, so a router added to it still appears without a restart.
+        # That is as much of the live inventory as survives losing the socket.
+        port = os.environ.get("ROUTER_AGENT_PORT", "8080")
+        return {name: f"http://{name}:{port}" for name in self._topology_order()}
 
     def _topology_order(self) -> list[str]:
         """The node order from the clab YAML, or nothing when there is no file.
@@ -194,39 +223,44 @@ class LabPoller:
         return [e for e in self.events if e["id"] > since]
 
     def _poll_node_sync(self, node: dict[str, Any]) -> dict[str, Any]:
-        container_name = f"{self.lab_prefix}-{node['name']}"
-        try:
-            container = self.client.containers.get(container_name)
-        except docker.errors.NotFound:
-            return {"error": f"container {container_name} not found"}
+        base = self._agents().get(node["name"])
+        if not base:
+            return {"error": f"no agent address for {node['name']}"}
 
-        summary = self._exec_json(container, "show ip bgp summary json")
-        # `detail` variant is required for community / large-community fields —
-        # the bulk `show ip bgp json` returns a trimmed path object without them.
-        bgp = self._exec_json(container, "show ip bgp detail json")
-        # The neighbours view carries FRR's own timers. It is fetched separately
-        # and NON-FATALLY: a router that answered the first two is up even if
-        # this one fails, and the page then shows the session without a
-        # heartbeat rather than showing the router as down.
+        summary = self._get_json(base, "bgp-summary")
+        # the `detail` view: the trimmed `show ip bgp json` returns paths with
+        # no community or large-community fields
+        bgp = self._get_json(base, "bgp-detail")
+        # The neighbours view carries FRR's own timers. It is fetched
+        # NON-FATALLY: a router that answered the first two is up even if this
+        # one fails, and the page then shows the session without a heartbeat
+        # rather than showing the router as down.
         try:
-            neighbors = self._exec_json(container, "show bgp neighbors json")
+            neighbors = self._get_json(base, "bgp-neighbors")
         except Exception:
             neighbors = None
         return {"summary": summary, "bgp": bgp, "neighbors": neighbors}
 
-    def _exec_json(self, container, command: str) -> Any:
-        result = container.exec_run(["vtysh", "-c", command])
-        if result.exit_code != 0:
-            raise RuntimeError(f"vtysh failed for {command}: {result.output[:200]}")
-        text = result.output.decode("utf-8", errors="replace")
-        # vtysh sometimes prints warnings before JSON; trim to first '{'
+    def _get_json(self, base: str, view: str) -> Any:
+        """One named view from one agent. `view` is ours, never a caller's."""
+        url = f"{base}/show/{view}"
+        try:
+            with urllib.request.urlopen(url, timeout=self.exec_timeout) as r:
+                text = r.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:200]
+            raise RuntimeError(f"agent {url} answered {exc.code}: {body}") from exc
+        except Exception as exc:                       # unreachable, timeout, DNS
+            raise RuntimeError(f"agent {url} unreachable: {exc}") from exc
+        # vtysh prints warnings before its JSON sometimes; the agent passes its
+        # output through untouched, so the trim stays here.
         idx = text.find("{")
         if idx == -1:
             return None
         try:
             return json.loads(text[idx:])
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"bad json from {command}: {exc}; output={text[:200]}")
+            raise RuntimeError(f"bad json from {url}: {exc}; output={text[:200]}")
 
     @classmethod
     def _signal(cls, prev: dict, curr: dict) -> dict:

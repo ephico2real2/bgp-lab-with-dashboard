@@ -1,0 +1,22 @@
+# The pinned FRR image plus a show-only HTTP agent.
+#
+# What this replaces: the dashboard reaching every router through the host's
+# Docker socket. That socket is the whole host — any container, any image, any
+# volume — and it was mounted into a web app with no authentication. The agent
+# is five read-only commands on a management address instead.
+#
+#   docker build -t frr-agent:local \
+#     --build-arg FRR_IMAGE=quay.io/frrouting/frr:10.7.1 \
+#     -f router-agent/Containerfile router-agent
+ARG FRR_IMAGE=quay.io/frrouting/frr:10.7.1
+FROM ${FRR_IMAGE}
+
+# python3 rather than a compiled binary: this repo is Python, and an agent its
+# owner can read and change without a second toolchain is worth more here than
+# the megabytes a static binary would save. No pip, no requirements — the
+# agent is standard library only.
+RUN apk add --no-cache python3
+
+COPY agent.py /usr/local/bin/frr-agent
+COPY start.sh /usr/local/bin/router-start
+RUN chmod 0755 /usr/local/bin/frr-agent /usr/local/bin/router-start

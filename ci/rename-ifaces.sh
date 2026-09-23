@@ -139,5 +139,17 @@ if ! ip link show eth0 >/dev/null 2>&1; then
   fi
 fi
 
-echo "rename-ifaces: done, exec docker-start"
+echo "rename-ifaces: done"
+
+# The show-only agent starts HERE, after the rename and before FRR takes the
+# foreground: it binds the management address, which only exists once eth0 is
+# the management interface. It runs as the `frr` user — vtysh works as that
+# uid because /var/run/frr is frr:frr and frr is in the frrvty group — and
+# there is no fallback to root: if the drop fails the agent does not start.
+if [ -n "${FRR_AGENT_ADDR:-}" ] && [ -x /usr/local/bin/frr-agent ]; then
+  echo "rename-ifaces: starting the show-only agent on ${FRR_AGENT_ADDR}"
+  su -s /bin/sh frr -c '/usr/local/bin/frr-agent' &
+fi
+
+echo "rename-ifaces: exec docker-start"
 exec /usr/lib/frr/docker-start
