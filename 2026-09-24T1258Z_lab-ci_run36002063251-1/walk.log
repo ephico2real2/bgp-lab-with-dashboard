@@ -1,0 +1,13 @@
+DOM connected+#graph canvas: 0.1 s
+graph four nodes (/api/state): 0.0 s
+events pane on load: 18 line(s), newest stamped 2026-09-24T12:58:10.770Z (0.0 s)
+wrote ci/out/screenshots/01-steady.png
+administrative shutdown of clab-simple-lab-isp1's 3 sessions
+dashboard shows a non-Established session: 2.0 s
+wrote ci/out/screenshots/02-sessions-down.png
+releasing clab-simple-lab-isp1's sessions
+dashboard sessions recovered: 2.0 s
+clear bgp * on clab-simple-lab-isp1 (the blog's demo; events only)
+wrote ci/out/screenshots/03-recovered.png
+events survive a reload: 34 before, 34 after
+wrote ci/out/screenshots/04-history.png
