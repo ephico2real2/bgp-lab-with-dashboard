@@ -75,6 +75,35 @@ def test_the_revision_reaches_both_the_label_and_the_running_app():
         "the app is not given the argument to serve on /api/version")
 
 
+AGENT_CONTAINERFILE = (ROOT / "router-agent" / "Containerfile").read_text()
+
+
+def test_the_agent_image_can_say_which_commit_it_is():
+    """CI passes --build-arg REVISION to this build too, and it was accepted
+    and discarded: ARG is per stage and this stage declared neither, so a
+    published image answered `revision=` — measured on sha-65a3a48. The
+    dashboard had the same defect; the guard for it only read the dashboard's
+    Dockerfile."""
+    live = "\n".join(line for line in AGENT_CONTAINERFILE.splitlines()
+                     if line.strip() and not line.lstrip().startswith("#"))
+    for arg in ("ARG REVISION", "ARG BUILT"):
+        assert re.search(rf"^{arg}", live, re.M), f"the agent image takes no {arg}"
+    assert re.search(r'org\.opencontainers\.image\.revision="?\$REVISION', live), (
+        "the agent's revision label is not built from the argument CI passes")
+
+
+def test_both_images_are_pinned_by_commit_in_the_topology():
+    """`:develop` moves; a pin names a build someone ran. Both the dashboard
+    and the routers are deployed by the containerlab path, so both are pinned."""
+    clab = (ROOT / "simple.clab.yml").read_text()
+    for image in ("bgp-dashboard", "bgp-router-agent"):
+        refs = re.findall(rf"quay\.io/\S+/{image}:(\S+)", clab)
+        assert refs, f"{image} is not referenced in simple.clab.yml"
+        for ref in refs:
+            assert PINNED.fullmatch(f"quay.io/ephico2real/{image}:{ref}") or ref.startswith("sha-"), (
+                f"{image} is pinned to {ref!r}, which is a moving tag")
+
+
 def test_the_image_says_what_it_is():
     """Read only the lines that BUILD something. A comment mentioning a label
     is not a label — measured: commenting the LABEL line out left every one of

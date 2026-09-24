@@ -17,7 +17,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.11
       env:
         FRR_AGENT_ADDR: 172.22.20.11:8080
@@ -32,7 +32,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.13
       env:
         FRR_AGENT_ADDR: 172.22.20.13:8080
@@ -47,7 +47,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.14
       env:
         FRR_AGENT_ADDR: 172.22.20.14:8080
@@ -62,7 +62,7 @@ topology:
       # holding only a transit-link interface reached the agent on its
       # management address after one `ip route add`, because Linux accepts a
       # packet for any local address on any interface.
-      image: quay.io/ephico2real/bgp-router-agent:develop
+      image: quay.io/ephico2real/bgp-router-agent:sha-65a3a48
       mgmt-ipv4: 172.22.20.12
       env:
         FRR_AGENT_ADDR: 172.22.20.12:8080
@@ -77,11 +77,11 @@ topology:
       # escaping fix, the exec timeout, the signal frame, the Traffic view and
       # the event history, so a `clab deploy` against it shows none of them.
       # Pinned by the commit that produced it; `:develop` follows the branch.
-      # Digest sha256:9d4aa0235271c9b3f68f8b88747862f91fc8b0def856b0a500a0d756554fcf6c
+      # Digest sha256:274a97b1e235d7e279a23ed60d896ed668e788ab609650eeddb466b404b02ea1
       # The image carries that commit as org.opencontainers.image.revision, so
       #   docker inspect <container> --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
       # answers which build is running without diffing files against a checkout.
-      image: quay.io/ephico2real/bgp-dashboard:sha-9a52441
+      image: quay.io/ephico2real/bgp-dashboard:sha-65a3a48
       image-pull-policy: IfNotPresent   # use cached image after first pull
       ports:
         # Loopback only. `8088:8080` publishes on every interface the host

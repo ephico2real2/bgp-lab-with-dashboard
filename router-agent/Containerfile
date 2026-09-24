@@ -11,6 +11,20 @@
 ARG FRR_IMAGE=quay.io/frrouting/frr:10.7.1
 FROM ${FRR_IMAGE}
 
+# Which build this is. CI already passes --build-arg REVISION/BUILT — it was
+# accepted and thrown away, because ARG is per stage and this stage declared
+# neither: `docker image inspect …:sha-65a3a48` answered `revision=` on a
+# published image. The same defect the dashboard had, in its sibling.
+ARG REVISION=unknown
+# created must be RFC 3339 or absent, so its fallback is empty rather than the
+# unparseable token "unknown".
+ARG BUILT=
+LABEL org.opencontainers.image.title="bgp-router-agent" \
+      org.opencontainers.image.description="FRR plus a show-only HTTP agent, so the dashboard needs no Docker socket" \
+      org.opencontainers.image.source="https://github.com/ephico2real2/bgp-lab-with-dashboard" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.created="$BUILT"
+
 # python3 rather than a compiled binary: this repo is Python, and an agent its
 # owner can read and change without a second toolchain is worth more here than
 # the megabytes a static binary would save. No pip, no requirements — the
